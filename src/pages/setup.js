@@ -5,7 +5,8 @@
 import { api } from '../lib/tauri-api.js'
 import { showUpgradeModal } from '../components/modal.js'
 import { toast } from '../components/toast.js'
-import { setUpgrading } from '../lib/app-state.js'
+import { setUpgrading, isMacPlatform } from '../lib/app-state.js'
+import { diagnoseInstallError } from '../lib/error-diagnosis.js'
 
 export async function render() {
   const page = document.createElement('div')
@@ -84,7 +85,12 @@ function renderSteps(page, { node, cliOk, config }) {
             OpenClaw 基于 Node.js 运行，请先安装。
           </p>
           <a class="btn btn-primary btn-sm" href="https://nodejs.org/" target="_blank" rel="noopener">下载 Node.js</a>
-          <span class="form-hint" style="margin-left:8px">安装后点击「重新检测」</span>`
+          <span class="form-hint" style="margin-left:8px">安装后点击「重新检测」</span>
+          ${isMacPlatform() ? `
+          <div style="margin-top:var(--space-sm);padding:8px 12px;background:var(--bg-tertiary);border-radius:var(--radius-sm);font-size:var(--font-size-xs);color:var(--text-secondary);line-height:1.6">
+            <strong>已经装了但检测不到？</strong> macOS 上从 Finder 启动可能找不到 Node.js。试试关掉 ClawPanel 后从终端启动：<br>
+            <code style="background:var(--bg-secondary);padding:2px 6px;border-radius:3px;user-select:all">open /Applications/ClawPanel.app</code>
+          </div>` : ''}`
       }
     </div>
   `
@@ -211,8 +217,13 @@ function bindEvents(page, nodeOk) {
       toast('OpenClaw 安装成功', 'success')
       setTimeout(() => window.location.reload(), 1500)
     } catch (e) {
-      modal.appendLog(String(e))
-      modal.setError('安装失败')
+      const errStr = String(e)
+      modal.appendLog(errStr)
+      const diagnosis = diagnoseInstallError(errStr)
+      modal.setError(diagnosis.title)
+      if (diagnosis.hint) modal.appendLog('')
+      if (diagnosis.hint) modal.appendLog('ℹ️ ' + diagnosis.hint)
+      if (diagnosis.command) modal.appendLog('💻 ' + diagnosis.command)
     } finally {
       setUpgrading(false)
       unlistenLog?.()
@@ -220,5 +231,4 @@ function bindEvents(page, nodeOk) {
     }
   })
 }
-
 

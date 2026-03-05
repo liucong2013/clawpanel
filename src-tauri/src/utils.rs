@@ -15,7 +15,9 @@ pub fn openclaw_command() -> std::process::Command {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::process::Command::new("openclaw")
+        let mut cmd = std::process::Command::new("openclaw");
+        cmd.env("PATH", crate::commands::enhanced_path());
+        cmd
     }
 }
 
@@ -31,6 +33,8 @@ pub fn openclaw_command_async() -> tokio::process::Command {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        tokio::process::Command::new("openclaw")
+        let mut cmd = tokio::process::Command::new("openclaw");
+        cmd.env("PATH", crate::commands::enhanced_path());
+        cmd
     }
 }

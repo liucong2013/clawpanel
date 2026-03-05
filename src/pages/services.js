@@ -6,6 +6,7 @@ import { api } from '../lib/tauri-api.js'
 import { toast } from '../components/toast.js'
 import { showConfirm, showUpgradeModal } from '../components/modal.js'
 import { isMacPlatform, setUpgrading, setUserStopped, resetAutoRestart } from '../lib/app-state.js'
+import { diagnoseInstallError } from '../lib/error-diagnosis.js'
 
 // HTML 转义，防止 XSS
 function escapeHtml(str) {
@@ -421,8 +422,13 @@ async function doUpgradeWithModal(source, page) {
     modal.setDone(typeof msg === 'string' ? msg : (msg?.message || '升级完成'))
     await loadVersion(page)
   } catch (e) {
-    modal.appendLog(String(e))
-    modal.setError('升级失败')
+    const errStr = String(e)
+    modal.appendLog(errStr)
+    const diagnosis = diagnoseInstallError(errStr)
+    modal.setError(diagnosis.title)
+    if (diagnosis.hint) modal.appendLog('')
+    if (diagnosis.hint) modal.appendLog('ℹ️ ' + diagnosis.hint)
+    if (diagnosis.command) modal.appendLog('💻 ' + diagnosis.command)
   } finally {
     setUpgrading(false)
     unlistenLog?.()

@@ -257,6 +257,49 @@ npm run tauri build -- --bundles nsis
 
 产物位于 `src-tauri/target/release/` 目录。
 
+## 常见问题
+
+### macOS 提示"已损坏，无法打开"
+
+没有苹果开发者签名，macOS Gatekeeper 会拦截。终端执行：
+
+```bash
+sudo xattr -rd com.apple.quarantine /Applications/ClawPanel.app
+```
+
+或前往「系统设置 → 隐私与安全性」点击「仍要打开」。
+
+### macOS 检测不到 Node.js
+
+从 Finder/Dock 启动 ClawPanel 时，应用的 PATH 环境变量可能不包含 Node.js 安装路径。
+
+**v0.4.1 已修复**：自动补充 `/usr/local/bin`、`/opt/homebrew/bin`、`~/.nvm`、`~/.volta` 等常见路径。
+
+临时解决：从终端启动 ClawPanel：
+
+```bash
+open /Applications/ClawPanel.app
+```
+
+### Windows 安装 OpenClaw 报 ENOENT (-4058)
+
+通常是文件权限或 npm 缓存问题：
+
+1. 以管理员身份运行 ClawPanel
+2. 或打开 PowerShell（管理员）手动安装：
+   ```powershell
+   npm install -g @qingchencloud/openclaw-zh --registry https://registry.npmmirror.com
+   ```
+3. 如果仍报错，清理 npm 缓存：`npm cache clean --force`
+
+### Windows 安装报 exit 128 (access rights)
+
+npm 依赖需要 Git，但系统未安装。请先安装 [Git for Windows](https://git-scm.com/download/win)，安装后重启 ClawPanel。
+
+### 安装后 Node.js 检测不到（Windows）
+
+安装 Node.js 后需要重启 ClawPanel（或重启电脑），新的 PATH 环境变量才能生效。
+
 ## 相关项目
 
 | 项目 | 说明 |

@@ -39,6 +39,7 @@ fn npm_command() -> Command {
     {
         let mut cmd = Command::new("npm");
         cmd.args(["--registry", &registry]);
+        cmd.env("PATH", super::enhanced_path());
         cmd
     }
 }
@@ -635,6 +636,8 @@ pub fn check_node() -> Result<Value, String> {
     let mut result = serde_json::Map::new();
     let mut cmd = Command::new("node");
     cmd.arg("--version");
+    #[cfg(not(target_os = "windows"))]
+    cmd.env("PATH", super::enhanced_path());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     match cmd.output() {

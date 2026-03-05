@@ -5,6 +5,18 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.1] - 2026-03-06
+
+### 修复 (Bug Fixes)
+
+- **macOS Node.js 检测失败** — Tauri 从 Finder 启动时 PATH 不含 `/usr/local/bin`、`/opt/homebrew/bin` 等常见路径，导致 `check_node`、`npm_command`、`openclaw_command` 找不到命令。新增 `enhanced_path()` 补充 nvm/volta/nodenv/fnm/n 等 Node.js 管理器路径
+- **npm 安装失败无引导** — 安装/升级 OpenClaw 失败时仅显示"安装失败"，现在自动诊断错误类型（Git 未安装 / 文件访问 / 权限不足 / 网络错误 / 缓存损坏）并给出具体修复命令
+
+### 优化 (Improvements)
+
+- **macOS 检测引导** — 安装引导页 Node.js 检测失败时，macOS 用户会看到"已经装了但检测不到？"提示，引导从终端启动
+- **错误诊断模块** — 新增 `error-diagnosis.js` 共享模块，安装引导页和服务管理页共用错误诊断逻辑
+
 ## [0.4.0] - 2026-03-05
 
 ### 新增 (Features)
