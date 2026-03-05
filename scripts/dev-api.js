@@ -583,6 +583,26 @@ const handlers = {
     return 'Gateway 服务已卸载'
   },
 
+  // 自动初始化配置文件（CLI 已装但 openclaw.json 不存在时）
+  init_openclaw_config() {
+    if (fs.existsSync(CONFIG_PATH)) return { created: false, message: '配置文件已存在' }
+    if (!fs.existsSync(OPENCLAW_DIR)) fs.mkdirSync(OPENCLAW_DIR, { recursive: true })
+    const defaultConfig = {
+      "$schema": "https://openclaw.ai/schema/config.json",
+      meta: { lastTouchedVersion: "2026.1.1" },
+      mode: "local",
+      models: { providers: {} },
+      gateway: {
+        port: 18789,
+        auth: { mode: "none" },
+        controlUi: { allowedOrigins: ["*"], allowInsecureAuth: true }
+      },
+      tools: { profile: "full", sessions: { visibility: "all" } }
+    }
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2))
+    return { created: true, message: '配置文件已创建' }
+  },
+
   get_deploy_config() {
     try {
       const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'))

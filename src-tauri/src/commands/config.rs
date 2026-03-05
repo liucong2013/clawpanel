@@ -627,6 +627,46 @@ pub async fn upgrade_openclaw(app: tauri::AppHandle, source: String) -> Result<S
     Ok(msg)
 }
 
+/// 自动初始化配置文件（CLI 已装但 openclaw.json 不存在时）
+#[tauri::command]
+pub fn init_openclaw_config() -> Result<Value, String> {
+    let dir = super::openclaw_dir();
+    let config_path = dir.join("openclaw.json");
+    let mut result = serde_json::Map::new();
+
+    if config_path.exists() {
+        result.insert("created".into(), Value::Bool(false));
+        result.insert("message".into(), Value::String("配置文件已存在".into()));
+        return Ok(Value::Object(result));
+    }
+
+    // 确保目录存在
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+
+    let default_config = serde_json::json!({
+        "$schema": "https://openclaw.ai/schema/config.json",
+        "meta": { "lastTouchedVersion": "2026.1.1" },
+        "mode": "local",
+        "models": { "providers": {} },
+        "gateway": {
+            "port": 18789,
+            "auth": { "mode": "none" },
+            "controlUi": { "allowedOrigins": ["*"], "allowInsecureAuth": true }
+        },
+        "tools": { "profile": "full", "sessions": { "visibility": "all" } }
+    });
+
+    let content = serde_json::to_string_pretty(&default_config)
+        .map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(&config_path, content).map_err(|e| format!("写入失败: {e}"))?;
+
+    result.insert("created".into(), Value::Bool(true));
+    result.insert("message".into(), Value::String("配置文件已创建".into()));
+    Ok(Value::Object(result))
+}
+
 #[tauri::command]
 pub fn check_installation() -> Result<Value, String> {
     let dir = super::openclaw_dir();

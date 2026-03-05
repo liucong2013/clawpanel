@@ -286,6 +286,7 @@ export const api = {
 
   // 安装/部署
   checkInstallation: () => cachedInvoke('check_installation', {}, 60000),
+  initOpenclawConfig: () => { invalidate('check_installation'); return invoke('init_openclaw_config') },
   checkNode: () => cachedInvoke('check_node', {}, 60000),
   checkNodeAtPath: (nodeDir) => invoke('check_node_at_path', { node_dir: nodeDir }),
   scanNodePaths: () => invoke('scan_node_paths'),

@@ -56,7 +56,20 @@ async function runDetect(page) {
   const cliOk = clawRes.status === 'fulfilled'
     && clawRes.value?.length > 0
     && clawRes.value[0]?.cli_installed !== false
-  const config = configRes.status === 'fulfilled' ? configRes.value : { installed: false }
+  let config = configRes.status === 'fulfilled' ? configRes.value : { installed: false }
+
+  // CLI 已装但配置缺失 → 自动创建默认配置
+  if (cliOk && !config.installed) {
+    try {
+      const initResult = await api.initOpenclawConfig()
+      if (initResult?.created) {
+        // 重新检测配置
+        config = await api.checkInstallation()
+      }
+    } catch (e) {
+      console.warn('[setup] 自动初始化配置失败:', e)
+    }
+  }
 
   renderSteps(page, { node, cliOk, config })
 }
@@ -129,8 +142,9 @@ function renderSteps(page, { node, cliOk, config }) {
       ${config.installed
         ? `<p style="color:var(--success);font-size:var(--font-size-sm)">配置文件位于 ${config.path || ''}</p>`
         : `<p style="color:var(--text-secondary);font-size:var(--font-size-sm);margin-bottom:var(--space-sm)">
-            安装 CLI 后会自动生成配置，也可手动执行 <code>openclaw configure</code>
-          </p>`
+            配置文件不存在，点击下方按钮自动创建默认配置。
+          </p>
+          <button class="btn btn-primary btn-sm" id="btn-init-config">一键初始化配置</button>`
       }
     </div>
   `
@@ -185,6 +199,26 @@ function bindEvents(page, nodeOk) {
   // 进入面板
   page.querySelector('#btn-enter')?.addEventListener('click', () => {
     window.location.hash = '/dashboard'
+  })
+
+  // 一键初始化配置
+  page.querySelector('#btn-init-config')?.addEventListener('click', async () => {
+    const btn = page.querySelector('#btn-init-config')
+    btn.disabled = true
+    btn.textContent = '初始化中...'
+    try {
+      const result = await api.initOpenclawConfig()
+      if (result?.created) {
+        toast('配置文件已创建', 'success')
+      } else {
+        toast(result?.message || '配置文件已存在', 'info')
+      }
+      setTimeout(() => runDetect(page), 500)
+    } catch (e) {
+      toast('初始化失败: ' + e, 'error')
+      btn.disabled = false
+      btn.textContent = '一键初始化配置'
+    }
   })
 
   // 自动扫描 Node.js

@@ -20,6 +20,7 @@ pub fn run() {
             config::write_mcp_config,
             config::get_version_info,
             config::check_installation,
+            config::init_openclaw_config,
             config::check_node,
             config::check_node_at_path,
             config::scan_node_paths,
