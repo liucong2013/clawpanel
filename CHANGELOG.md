@@ -5,6 +5,24 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.7.0] - 2026-03-08
+
+### 新功能 (Features)
+
+- **OpenClaw 版本管理** — 支持安装/升级/降级/切换版本，汉化版与原版自由选择，版本号从 npm registry 实时拉取
+- **版本选择器弹窗** — 可视化选择目标版本，自动判断操作类型（安装/升级/降级/切换/重新安装）
+- **Headless Web 服务器** — 新增 `npm run serve` 独立 Node.js 静态服务器，替代 `npx vite`，用于 Linux 无桌面部署
+- **扩展工具管理** — Skills 页面全新设计，支持浏览、安装、卸载 MCP 工具
+- **前端热更新基础设施** — Release 自动构建 web 包，支持 OTA 检查与回退
+
+### 改进 (Improvements)
+
+- **macOS Gatekeeper 提示优化** — 官网 + README 强调「先拖入应用程序」，新增 `~/Downloads` 路径备选命令
+- **部署文档统一** — `linux-deploy.sh/md`、`docker-deploy.md`、`README.md` 全部改为 `npm run serve`
+- **弹窗标题动态化** — 安装/升级/降级/卸载操作各自显示准确标题，关闭弹窗后自动刷新页面
+- **跨平台兼容** — `serve.js` 路径分隔符使用 `path.sep`，确保 Windows/Linux/macOS 通用
+- **AI 助手危险工具确认** — 执行系统命令等高风险操作前弹出二次确认
+
 ## [0.6.0] - 2026-03-07
 
 ### 新功能 (Features)
