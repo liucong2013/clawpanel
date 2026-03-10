@@ -1,7 +1,9 @@
 /// 服务管理命令
 /// macOS: launchctl + LaunchAgents plist
 /// Windows: openclaw CLI + 进程检测
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
