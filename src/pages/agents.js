@@ -14,7 +14,7 @@ export async function render() {
     <div class="page-header">
       <div>
         <h1 class="page-title">Agent 管理</h1>
-        <p class="page-desc">创建和管理 OpenClaw 智能体，配置身份、模型和工作区</p>
+        <p class="page-desc">创建和管理 OpenClaw Agent，配置身份、模型和工作区</p>
       </div>
       <div class="page-actions">
         <button class="btn btn-primary" id="btn-add-agent">+ 新建 Agent</button>

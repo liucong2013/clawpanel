@@ -1,7 +1,7 @@
 #[cfg(not(target_os = "macos"))]
 use crate::utils::openclaw_command;
 /// 配置读写命令
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::fs;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -205,6 +205,13 @@ fn sync_providers_to_agent_models(config: &Value) {
 
         let mut changed = false;
 
+        if models_json.get("providers").and_then(|p| p.as_object()).is_none() {
+            if let Some(root) = models_json.as_object_mut() {
+                root.insert("providers".into(), json!({}));
+                changed = true;
+            }
+        }
+
         // 同步 providers
         if let Some(dst_providers) = models_json
             .get_mut("providers")
@@ -220,6 +227,13 @@ fn sync_providers_to_agent_models(config: &Value) {
                 for k in to_remove {
                     dst_providers.remove(&k);
                     changed = true;
+                }
+
+                for (provider_name, src_provider) in src.iter() {
+                    if !dst_providers.contains_key(provider_name) {
+                        dst_providers.insert(provider_name.clone(), src_provider.clone());
+                        changed = true;
+                    }
                 }
 
                 // 2. 同步存在的 provider 的 baseUrl/apiKey/api + 清理已删除的 models
@@ -1058,6 +1072,8 @@ pub fn save_custom_node_path(node_dir: String) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&Value::Object(config))
         .map_err(|e| format!("序列化失败: {e}"))?;
     std::fs::write(&config_path, json).map_err(|e| format!("写入配置失败: {e}"))?;
+    // 立即刷新 PATH 缓存，使新路径生效（无需重启应用）
+    super::refresh_enhanced_path();
     Ok(())
 }
 
@@ -1245,6 +1261,10 @@ pub async fn restart_gateway() -> Result<String, String> {
 fn normalize_base_url(raw: &str) -> String {
     let mut base = raw.trim_end_matches('/').to_string();
     for suffix in &[
+        "/api/chat",
+        "/api/generate",
+        "/api/tags",
+        "/api",
         "/chat/completions",
         "/completions",
         "/responses",
@@ -1256,7 +1276,56 @@ fn normalize_base_url(raw: &str) -> String {
             break;
         }
     }
-    base.trim_end_matches('/').to_string()
+    base = base.trim_end_matches('/').to_string();
+    if base.ends_with(":11434") {
+        return format!("{base}/v1");
+    }
+    base
+}
+
+fn normalize_model_api_type(raw: &str) -> &'static str {
+    match raw.trim() {
+        "anthropic" | "anthropic-messages" => "anthropic-messages",
+        "google-gemini" => "google-gemini",
+        "openai" | "openai-completions" | "openai-responses" | "" => "openai-completions",
+        _ => "openai-completions",
+    }
+}
+
+fn normalize_base_url_for_api(raw: &str, api_type: &str) -> String {
+    let mut base = normalize_base_url(raw);
+    match normalize_model_api_type(api_type) {
+        "anthropic-messages" => {
+            if !base.ends_with("/v1") {
+                base.push_str("/v1");
+            }
+            base
+        }
+        "google-gemini" => base,
+        _ => {
+            if !base.ends_with("/v1") {
+                if let Some(idx) = base.find("/v1/") {
+                    base.truncate(idx + 3);
+                } else {
+                    base.push_str("/v1");
+                }
+            }
+            base
+        }
+    }
+}
+
+fn extract_error_message(text: &str, status: reqwest::StatusCode) -> String {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| {
+            v.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .map(String::from)
+                .or_else(|| v.get("message").and_then(|m| m.as_str()).map(String::from))
+        })
+        .unwrap_or_else(|| format!("HTTP {status}"))
 }
 
 /// 测试模型连通性：向 provider 发送一个简单的 chat completion 请求
@@ -1265,27 +1334,57 @@ pub async fn test_model(
     base_url: String,
     api_key: String,
     model_id: String,
+    api_type: Option<String>,
 ) -> Result<String, String> {
-    let url = format!("{}/chat/completions", normalize_base_url(&base_url));
-
-    let body = serde_json::json!({
-        "model": model_id,
-        "messages": [{"role": "user", "content": "Hi"}],
-        "max_tokens": 16,
-        "stream": false
-    });
+    let api_type = normalize_model_api_type(api_type.as_deref().unwrap_or("openai-completions"));
+    let base = normalize_base_url_for_api(&base_url, api_type);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
-    let mut req = client.post(&url).json(&body);
-    if !api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {api_key}"));
+    let resp = match api_type {
+        "anthropic-messages" => {
+            let url = format!("{}/messages", base);
+            let body = json!({
+                "model": model_id,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_tokens": 16,
+            });
+            let mut req = client
+                .post(&url)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body);
+            if !api_key.is_empty() {
+                req = req.header("x-api-key", api_key.clone());
+            }
+            req.send()
+        }
+        "google-gemini" => {
+            let url = format!("{}/models/{}:generateContent?key={}", base, model_id, api_key);
+            let body = json!({
+                "contents": [{"role": "user", "parts": [{"text": "Hi"}]}]
+            });
+            client.post(&url).json(&body).send()
+        }
+        _ => {
+            let url = format!("{}/chat/completions", base);
+            let body = json!({
+                "model": model_id,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_tokens": 16,
+                "stream": false
+            });
+            let mut req = client.post(&url).json(&body);
+            if !api_key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {api_key}"));
+            }
+            req.send()
+        }
     }
-
-    let resp = req.send().await.map_err(|e| {
+    .await
+    .map_err(|e| {
         if e.is_timeout() {
             "请求超时 (30s)".to_string()
         } else if e.is_connect() {
@@ -1299,16 +1398,7 @@ pub async fn test_model(
     let text = resp.text().await.unwrap_or_default();
 
     if !status.is_success() {
-        // 尝试提取错误信息
-        let msg = serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| {
-                v.get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(|m| m.as_str())
-                    .map(String::from)
-            })
-            .unwrap_or_else(|| format!("HTTP {status}"));
+        let msg = extract_error_message(&text, status);
         // 401/403 是认证错误，一定要报错
         if status.as_u16() == 401 || status.as_u16() == 403 {
             return Err(msg);
@@ -1324,6 +1414,29 @@ pub async fn test_model(
     let reply = serde_json::from_str::<serde_json::Value>(&text)
         .ok()
         .and_then(|v| {
+            if let Some(arr) = v.get("content").and_then(|c| c.as_array()) {
+                let text = arr
+                    .iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("");
+                if !text.is_empty() {
+                    return Some(text);
+                }
+            }
+            if let Some(t) = v
+                .get("candidates")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("content"))
+                .and_then(|c| c.get("parts"))
+                .and_then(|p| p.get(0))
+                .and_then(|p| p.get("text"))
+                .and_then(|t| t.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                return Some(t.to_string());
+            }
             // 标准 OpenAI 格式: choices[0].message.content
             if let Some(msg) = v
                 .get("choices")
@@ -1361,20 +1474,43 @@ pub async fn test_model(
 
 /// 获取服务商的远程模型列表（调用 /models 接口）
 #[tauri::command]
-pub async fn list_remote_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
-    let url = format!("{}/models", normalize_base_url(&base_url));
+pub async fn list_remote_models(
+    base_url: String,
+    api_key: String,
+    api_type: Option<String>,
+) -> Result<Vec<String>, String> {
+    let api_type = normalize_model_api_type(api_type.as_deref().unwrap_or("openai-completions"));
+    let base = normalize_base_url_for_api(&base_url, api_type);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
-    let mut req = client.get(&url);
-    if !api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {api_key}"));
+    let resp = match api_type {
+        "anthropic-messages" => {
+            let url = format!("{}/models", base);
+            let mut req = client.get(&url).header("anthropic-version", "2023-06-01");
+            if !api_key.is_empty() {
+                req = req.header("x-api-key", api_key.clone());
+            }
+            req.send()
+        }
+        "google-gemini" => {
+            let url = format!("{}/models?key={}", base, api_key);
+            client.get(&url).send()
+        }
+        _ => {
+            let url = format!("{}/models", base);
+            let mut req = client.get(&url);
+            if !api_key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {api_key}"));
+            }
+            req.send()
+        }
     }
-
-    let resp = req.send().await.map_err(|e| {
+    .await
+    .map_err(|e| {
         if e.is_timeout() {
             "请求超时 (15s)，该服务商可能不支持模型列表接口".to_string()
         } else if e.is_connect() {
@@ -1388,27 +1524,29 @@ pub async fn list_remote_models(base_url: String, api_key: String) -> Result<Vec
     let text = resp.text().await.unwrap_or_default();
 
     if !status.is_success() {
-        let msg = serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| {
-                v.get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(|m| m.as_str())
-                    .map(String::from)
-            })
-            .unwrap_or_else(|| format!("HTTP {status}"));
+        let msg = extract_error_message(&text, status);
         return Err(format!("获取模型列表失败: {msg}"));
     }
 
-    // 解析 OpenAI 格式的 /models 响应
+    // 解析 OpenAI / Anthropic / Gemini 格式的 /models 响应
     let ids = serde_json::from_str::<serde_json::Value>(&text)
         .ok()
         .and_then(|v| {
-            let data = v.get("data")?.as_array()?;
-            let mut ids: Vec<String> = data
-                .iter()
-                .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(String::from))
-                .collect();
+            let mut ids: Vec<String> = if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
+                data.iter()
+                    .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(String::from))
+                    .collect()
+            } else if let Some(data) = v.get("models").and_then(|d| d.as_array()) {
+                data.iter()
+                    .filter_map(|m| {
+                        m.get("name")
+                            .and_then(|id| id.as_str())
+                            .map(|s| s.trim_start_matches("models/").to_string())
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
             ids.sort();
             Some(ids)
         })
@@ -1544,47 +1682,75 @@ pub fn patch_model_vision() -> Result<bool, String> {
     Ok(changed)
 }
 
-/// 检查 ClawPanel 自身是否有新版本（通过 GitHub releases API）
+/// 检查 ClawPanel 自身是否有新版本（GitHub → Gitee 自动降级）
 #[tauri::command]
 pub async fn check_panel_update() -> Result<Value, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(8))
         .user_agent("ClawPanel")
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
-    let url = "https://api.github.com/repos/qingchencloud/clawpanel/releases/latest";
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("请求失败: {e}"))?;
+    // 先尝试 GitHub，失败后降级 Gitee
+    let sources = [
+        (
+            "https://api.github.com/repos/qingchencloud/clawpanel/releases/latest",
+            "https://github.com/qingchencloud/clawpanel/releases",
+            "github",
+        ),
+        (
+            "https://gitee.com/api/v5/repos/QtCodeCreators/clawpanel/releases/latest",
+            "https://gitee.com/QtCodeCreators/clawpanel/releases",
+            "gitee",
+        ),
+    ];
 
-    if !resp.status().is_success() {
-        return Err(format!("GitHub API 返回 {}", resp.status()));
+    let mut last_err = String::new();
+    for (api_url, releases_url, source) in &sources {
+        match client.get(*api_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let json: Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| format!("解析响应失败: {e}"))?;
+
+                let tag = json
+                    .get("tag_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim_start_matches('v')
+                    .to_string();
+
+                if tag.is_empty() {
+                    last_err = format!("{source}: 未找到版本号");
+                    continue;
+                }
+
+                let mut result = serde_json::Map::new();
+                result.insert("latest".into(), Value::String(tag));
+                result.insert(
+                    "url".into(),
+                    json.get("html_url").cloned().unwrap_or(Value::String(
+                        releases_url.to_string(),
+                    )),
+                );
+                result.insert("source".into(), Value::String(source.to_string()));
+                result.insert(
+                    "downloadUrl".into(),
+                    Value::String("https://claw.qt.cool".into()),
+                );
+                return Ok(Value::Object(result));
+            }
+            Ok(resp) => {
+                last_err = format!("{source}: HTTP {}", resp.status());
+            }
+            Err(e) => {
+                last_err = format!("{source}: {e}");
+            }
+        }
     }
 
-    let json: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("解析响应失败: {e}"))?;
-
-    let tag = json
-        .get("tag_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim_start_matches('v')
-        .to_string();
-
-    let mut result = serde_json::Map::new();
-    result.insert("latest".into(), Value::String(tag));
-    result.insert(
-        "url".into(),
-        json.get("html_url").cloned().unwrap_or(Value::String(
-            "https://github.com/qingchencloud/clawpanel/releases".into(),
-        )),
-    );
-    Ok(Value::Object(result))
+    Err(last_err)
 }
 
 // === 面板配置 (clawpanel.json) ===
@@ -1619,4 +1785,176 @@ pub fn get_npm_registry() -> Result<String, String> {
 pub fn set_npm_registry(registry: String) -> Result<(), String> {
     let path = super::openclaw_dir().join("npm-registry.txt");
     fs::write(&path, registry.trim()).map_err(|e| format!("保存失败: {e}"))
+}
+
+/// 检测 Git 是否已安装
+#[tauri::command]
+pub fn check_git() -> Result<Value, String> {
+    let mut result = serde_json::Map::new();
+    let mut cmd = Command::new("git");
+    cmd.arg("--version");
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+    match cmd.output() {
+        Ok(o) if o.status.success() => {
+            let ver = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            result.insert("installed".into(), Value::Bool(true));
+            result.insert("version".into(), Value::String(ver));
+        }
+        _ => {
+            result.insert("installed".into(), Value::Bool(false));
+            result.insert("version".into(), Value::Null);
+        }
+    }
+    Ok(Value::Object(result))
+}
+
+/// 尝试自动安装 Git（Windows: winget; macOS: xcode-select; Linux: apt/yum）
+#[tauri::command]
+pub async fn auto_install_git(app: tauri::AppHandle) -> Result<String, String> {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use tauri::Emitter;
+
+    let _ = app.emit("upgrade-log", "正在尝试自动安装 Git...");
+
+    #[cfg(target_os = "windows")]
+    {
+        // 尝试 winget
+        let _ = app.emit("upgrade-log", "尝试使用 winget 安装 Git...");
+        let mut child = Command::new("winget")
+            .args(["install", "--id", "Git.Git", "-e", "--source", "winget", "--accept-package-agreements", "--accept-source-agreements"])
+            .creation_flags(0x08000000)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("winget 不可用，请手动安装 Git: {e}"))?;
+
+        let stderr = child.stderr.take();
+        let stdout = child.stdout.take();
+        let app2 = app.clone();
+        let handle = std::thread::spawn(move || {
+            if let Some(pipe) = stderr {
+                for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                    let _ = app2.emit("upgrade-log", &line);
+                }
+            }
+        });
+        if let Some(pipe) = stdout {
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                let _ = app.emit("upgrade-log", &line);
+            }
+        }
+        let _ = handle.join();
+        let status = child.wait().map_err(|e| format!("等待 winget 完成失败: {e}"))?;
+        if status.success() {
+            let _ = app.emit("upgrade-log", "Git 安装成功！");
+            return Ok("Git 已通过 winget 安装".to_string());
+        }
+        return Err("winget 安装 Git 失败，请手动下载安装: https://git-scm.com/downloads".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.emit("upgrade-log", "尝试通过 xcode-select 安装 Git...");
+        let mut child = Command::new("xcode-select")
+            .arg("--install")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("xcode-select 不可用: {e}"))?;
+        let status = child.wait().map_err(|e| format!("等待安装完成失败: {e}"))?;
+        if status.success() {
+            let _ = app.emit("upgrade-log", "Git 安装已触发，请在弹出的窗口中确认安装。");
+            return Ok("已触发 xcode-select 安装，请在弹窗中确认".to_string());
+        }
+        return Err("xcode-select 安装失败，请手动安装 Xcode Command Line Tools 或 brew install git".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // 检测包管理器
+        let pkg_mgr = if Command::new("apt-get").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+            "apt"
+        } else if Command::new("yum").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+            "yum"
+        } else if Command::new("dnf").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+            "dnf"
+        } else if Command::new("pacman").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+            "pacman"
+        } else {
+            return Err("未找到包管理器，请手动安装 Git: sudo apt install git 或 sudo yum install git".to_string());
+        };
+
+        let (cmd_name, args): (&str, Vec<&str>) = match pkg_mgr {
+            "apt" => ("sudo", vec!["apt-get", "install", "-y", "git"]),
+            "yum" => ("sudo", vec!["yum", "install", "-y", "git"]),
+            "dnf" => ("sudo", vec!["dnf", "install", "-y", "git"]),
+            "pacman" => ("sudo", vec!["pacman", "-S", "--noconfirm", "git"]),
+            _ => return Err("不支持的包管理器".to_string()),
+        };
+
+        let _ = app.emit("upgrade-log", format!("执行: {} {}", cmd_name, args.join(" ")));
+        let mut child = Command::new(cmd_name)
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("安装命令执行失败: {e}"))?;
+
+        let stderr = child.stderr.take();
+        let stdout = child.stdout.take();
+        let app2 = app.clone();
+        let handle = std::thread::spawn(move || {
+            if let Some(pipe) = stderr {
+                for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                    let _ = app2.emit("upgrade-log", &line);
+                }
+            }
+        });
+        if let Some(pipe) = stdout {
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                let _ = app.emit("upgrade-log", &line);
+            }
+        }
+        let _ = handle.join();
+        let status = child.wait().map_err(|e| format!("等待安装完成失败: {e}"))?;
+        if status.success() {
+            let _ = app.emit("upgrade-log", "Git 安装成功！");
+            return Ok("Git 已安装".to_string());
+        }
+        return Err("Git 安装失败，请手动执行: sudo apt install git".to_string());
+    }
+}
+
+/// 配置 Git 使用 HTTPS 替代 SSH，解决国内用户 SSH 不通的问题
+#[tauri::command]
+pub fn configure_git_https() -> Result<String, String> {
+    let mut success = 0;
+    let configs = [
+        ("url.https://github.com/.insteadOf", "ssh://git@github.com/"),
+        ("url.https://github.com/.insteadOf", "git@github.com:"),
+        ("url.https://github.com/.insteadOf", "git://github.com/"),
+    ];
+    for (key, value) in &configs {
+        let mut cmd = Command::new("git");
+        cmd.args(["config", "--global", key, value]);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000);
+        if cmd.output().map(|o| o.status.success()).unwrap_or(false) {
+            success += 1;
+        }
+    }
+    if success > 0 {
+        Ok(format!("已配置 Git 使用 HTTPS（{success} 条规则）"))
+    } else {
+        Err("Git 未安装或配置失败".to_string())
+    }
+}
+
+/// 刷新 enhanced_path 缓存，使新设置的 Node.js 路径立即生效
+#[tauri::command]
+pub fn invalidate_path_cache() -> Result<(), String> {
+    super::refresh_enhanced_path();
+    Ok(())
 }

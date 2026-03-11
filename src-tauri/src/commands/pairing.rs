@@ -191,3 +191,70 @@ pub fn check_pairing_status() -> Result<bool, String> {
 
     Ok(paired.get(device_id).is_some())
 }
+
+async fn run_pairing_command(args: Vec<String>) -> Result<String, String> {
+    let mut cmd = crate::utils::openclaw_command_async();
+    cmd.args(args);
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| format!("执行 openclaw 失败: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let message = match (stdout.is_empty(), stderr.is_empty()) {
+        (false, false) => format!("{stdout}\n{stderr}"),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (true, true) => String::new(),
+    };
+
+    if output.status.success() {
+        Ok(if message.is_empty() {
+            "操作完成".into()
+        } else {
+            message
+        })
+    } else {
+        Err(if message.is_empty() {
+            format!("命令执行失败: {}", output.status)
+        } else {
+            message
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn pairing_list_channel(channel: String) -> Result<String, String> {
+    let channel = channel.trim();
+    if channel.is_empty() {
+        return Err("channel 不能为空".into());
+    }
+    run_pairing_command(vec!["pairing".into(), "list".into(), channel.into()]).await
+}
+
+#[tauri::command]
+pub async fn pairing_approve_channel(
+    channel: String,
+    code: String,
+    notify: bool,
+) -> Result<String, String> {
+    let channel = channel.trim();
+    let code = code.trim();
+    if channel.is_empty() {
+        return Err("channel 不能为空".into());
+    }
+    if code.is_empty() {
+        return Err("配对码不能为空".into());
+    }
+    let mut args = vec![
+        "pairing".into(),
+        "approve".into(),
+        channel.into(),
+        code.into(),
+    ];
+    if notify {
+        args.push("--notify".into());
+    }
+    run_pairing_command(args).await
+}

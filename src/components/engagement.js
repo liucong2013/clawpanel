@@ -2,11 +2,12 @@
  * 社区引导浮窗 — 适时提醒用户加群 & Star
  *
  * 触发条件（全部满足才弹出）：
- *   1. 累计打开 ≥ 3 次
- *   2. 首次打开距今 ≥ 3 天
- *   3. 上次弹出距今 ≥ 14 天
+ *   1. 累计打开 ≥ 2 次
+ *   2. 首次打开距今 ≥ 1 天
+ *   3. 今天未关闭过（每天最多弹一次）
  *   4. 未被永久关闭
- *   5. 由外部在"正向时机"主动调用 tryShow()
+ *   5. 由外部在"正向时机"主动调用 tryShow()（如保存配置成功、Gateway 启动成功）
+ *   6. 不在聊天/助手页面时触发（避免打断对话）
  */
 
 const KEYS = {
@@ -14,12 +15,13 @@ const KEYS = {
   openCount: 'clawpanel_open_count',
   lastShown: 'clawpanel_engage_shown',
   never: 'clawpanel_engage_never',
+  todayDismiss: 'clawpanel_engage_today',
 }
 
 const DAY = 86400000
-const MIN_OPENS = 3
-const MIN_DAYS = 3
-const COOLDOWN_DAYS = 14
+const MIN_OPENS = 2
+const MIN_DAYS = 1
+const COOLDOWN_DAYS = 1
 const AUTO_DISMISS_MS = 25000
 
 // 启动时记录打开次数
@@ -33,14 +35,22 @@ function _track() {
 }
 _track()
 
+function _todayKey() {
+  const d = new Date()
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
+
 function _canShow() {
   if (localStorage.getItem(KEYS.never) === '1') return false
   const count = parseInt(localStorage.getItem(KEYS.openCount) || '0')
   if (count < MIN_OPENS) return false
   const first = parseInt(localStorage.getItem(KEYS.firstOpen) || '0')
   if (Date.now() - first < MIN_DAYS * DAY) return false
-  const last = parseInt(localStorage.getItem(KEYS.lastShown) || '0')
-  if (Date.now() - last < COOLDOWN_DAYS * DAY) return false
+  // 今天已经弹过/关闭过 → 不再弹
+  if (localStorage.getItem(KEYS.todayDismiss) === _todayKey()) return false
+  // 避免在聊天/助手页面打断对话
+  const hash = location.hash || ''
+  if (hash.includes('/chat') || hash.includes('/assistant')) return false
   return true
 }
 
@@ -117,24 +127,22 @@ export function tryShowEngagement() {
       </div>
 
       <div class="engage-footer">
-        <span class="engage-never">不再提醒</span>
+        <span class="engage-today-dismiss">今日不再弹窗</span>
       </div>
     </div>
   `
   document.body.appendChild(overlay)
   requestAnimationFrame(() => overlay.classList.add('engage-visible'))
 
-  function dismiss() {
+  function dismiss(markToday = true) {
+    if (markToday) localStorage.setItem(KEYS.todayDismiss, _todayKey())
     overlay.classList.remove('engage-visible')
     setTimeout(() => { overlay.remove(); _showing = false }, 250)
   }
 
   overlay.addEventListener('click', (e) => { if (e.target === overlay) dismiss() })
-  overlay.querySelector('.engage-close').onclick = dismiss
-  overlay.querySelector('.engage-never').onclick = () => {
-    localStorage.setItem(KEYS.never, '1')
-    dismiss()
-  }
+  overlay.querySelector('.engage-close').onclick = () => dismiss()
+  overlay.querySelector('.engage-today-dismiss').onclick = () => dismiss(true)
   overlay.querySelector('[data-action="copy-share"]').onclick = () => {
     navigator.clipboard.writeText(shareText).then(() => {
       const desc = overlay.querySelector('[data-action="copy-share"] .engage-action-desc')

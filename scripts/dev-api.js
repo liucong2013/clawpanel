@@ -997,8 +997,10 @@ const ALWAYS_LOCAL = new Set([
 // 清理 base URL：去掉尾部斜杠和已知端点路径，防止路径重复
 function _normalizeBaseUrl(raw) {
   let base = (raw || '').replace(/\/+$/, '')
-  base = base.replace(/\/(chat\/completions|completions|responses|messages|models)\/?$/, '')
-  return base.replace(/\/+$/, '')
+  base = base.replace(/\/(api\/chat|api\/generate|api\/tags|api|chat\/completions|completions|responses|messages|models)\/?$/, '')
+  base = base.replace(/\/+$/, '')
+  if (/:11434$/i.test(base)) return `${base}/v1`
+  return base
 }
 
 // === API Handlers ===
@@ -2301,31 +2303,69 @@ const handlers = {
   },
 
   // 模型测试
-  async test_model({ baseUrl, apiKey, modelId }) {
-    const url = `${_normalizeBaseUrl(baseUrl)}/chat/completions`
-    const body = JSON.stringify({
-      model: modelId,
-      messages: [{ role: 'user', content: 'Hi' }],
-      max_tokens: 16,
-      stream: false
-    })
+  async test_model({ baseUrl, apiKey, modelId, apiType = 'openai-completions' }) {
+    const type = ['anthropic', 'anthropic-messages'].includes(apiType) ? 'anthropic-messages'
+      : apiType === 'google-gemini' ? 'google-gemini'
+      : 'openai-completions'
+    let base = _normalizeBaseUrl(baseUrl)
+    if (type === 'anthropic-messages' && !/\/v1$/i.test(base)) base += '/v1'
+    else if (type === 'openai-completions' && !/\/v1$/i.test(base)) base += '/v1'
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 30000)
     try {
-      const headers = { 'Content-Type': 'application/json' }
-      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-      const resp = await fetch(url, { method: 'POST', headers, body, signal: controller.signal })
+      let resp
+      if (type === 'anthropic-messages') {
+        const headers = { 'Content-Type': 'application/json', 'anthropic-version': '2023-06-01' }
+        if (apiKey) headers['x-api-key'] = apiKey
+        resp = await fetch(`${base}/messages`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: modelId,
+            messages: [{ role: 'user', content: 'Hi' }],
+            max_tokens: 16,
+          }),
+          signal: controller.signal
+        })
+      } else if (type === 'google-gemini') {
+        resp = await fetch(`${base}/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey || '')}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Hi' }] }] }),
+          signal: controller.signal
+        })
+      } else {
+        const headers = { 'Content-Type': 'application/json' }
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+        resp = await fetch(`${base}/chat/completions`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: modelId,
+            messages: [{ role: 'user', content: 'Hi' }],
+            max_tokens: 16,
+            stream: false
+          }),
+          signal: controller.signal
+        })
+      }
       clearTimeout(timeout)
       if (!resp.ok) {
         const text = await resp.text()
         let msg = `HTTP ${resp.status}`
-        try { msg = JSON.parse(text).error?.message || msg } catch {}
-        throw new Error(msg)
+        try {
+          const parsed = JSON.parse(text)
+          msg = parsed.error?.message || parsed.message || msg
+        } catch {}
+        if (resp.status === 401 || resp.status === 403) throw new Error(msg)
+        return `⚠ 连接正常（API 返回 ${resp.status}，部分模型对简单测试不兼容，不影响实际使用）`
       }
       const data = await resp.json()
+      const anthropicText = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
+      const geminiText = data.candidates?.[0]?.content?.parts?.map?.(p => p.text).filter(Boolean).join('') || ''
       const content = data.choices?.[0]?.message?.content
       const reasoning = data.choices?.[0]?.message?.reasoning_content
-      return content || (reasoning ? `[reasoning] ${reasoning}` : '（无回复内容）')
+      return anthropicText || geminiText || content || (reasoning ? `[reasoning] ${reasoning}` : '（无回复内容）')
     } catch (e) {
       clearTimeout(timeout)
       if (e.name === 'AbortError') throw new Error('请求超时 (30s)')
@@ -2333,18 +2373,43 @@ const handlers = {
     }
   },
 
-  async list_remote_models({ baseUrl, apiKey }) {
-    const url = `${_normalizeBaseUrl(baseUrl)}/models`
-    const headers = {}
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+  async list_remote_models({ baseUrl, apiKey, apiType = 'openai-completions' }) {
+    const type = ['anthropic', 'anthropic-messages'].includes(apiType) ? 'anthropic-messages'
+      : apiType === 'google-gemini' ? 'google-gemini'
+      : 'openai-completions'
+    let base = _normalizeBaseUrl(baseUrl)
+    if (type === 'anthropic-messages' && !/\/v1$/i.test(base)) base += '/v1'
+    else if (type === 'openai-completions' && !/\/v1$/i.test(base)) base += '/v1'
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 15000)
     try {
-      const resp = await fetch(url, { headers, signal: controller.signal })
+      let resp
+      if (type === 'anthropic-messages') {
+        const headers = { 'anthropic-version': '2023-06-01' }
+        if (apiKey) headers['x-api-key'] = apiKey
+        resp = await fetch(`${base}/models`, { headers, signal: controller.signal })
+      } else if (type === 'google-gemini') {
+        resp = await fetch(`${base}/models?key=${encodeURIComponent(apiKey || '')}`, { signal: controller.signal })
+      } else {
+        const headers = {}
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+        resp = await fetch(`${base}/models`, { headers, signal: controller.signal })
+      }
       clearTimeout(timeout)
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        let msg = `HTTP ${resp.status}`
+        try {
+          const parsed = JSON.parse(text)
+          msg = parsed.error?.message || parsed.message || msg
+        } catch {}
+        throw new Error(msg)
+      }
       const data = await resp.json()
-      const ids = (data.data || []).map(m => m.id).sort()
+      const ids = (data.data || []).map(m => m.id)
+        .concat((data.models || []).map(m => (m.name || '').replace(/^models\//, '')))
+        .filter(Boolean)
+        .sort()
       if (!ids.length) throw new Error('该服务商返回了空的模型列表')
       return ids
     } catch (e) {

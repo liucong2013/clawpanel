@@ -78,6 +78,15 @@
   font-weight: 700;
 }
 
+.stat-card-clickable {
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.stat-card-clickable:hover {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
 .stat-card-meta {
   font-size: var(--font-size-xs);
   color: var(--text-tertiary);
@@ -448,8 +457,8 @@ mark {
   background: #ffffff;
   border-radius: 20px;
   padding: 28px 28px 20px;
-  width: 460px;
-  max-width: 92vw;
+  width: 500px;
+  max-width: 94vw;
   max-height: 90vh;
   overflow-y: auto;
   box-shadow: 0 24px 80px rgba(0,0,0,.2);
@@ -576,9 +585,9 @@ mark {
   margin-bottom: 12px;
 }
 .engage-qrcodes {
-  display: flex;
-  justify-content: center;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
   margin-bottom: 16px;
 }
 .engage-qr-item {
@@ -594,8 +603,9 @@ mark {
   transform: translateY(-2px);
 }
 .engage-qr-item img {
-  width: 110px;
-  height: 110px;
+  width: 100%;
+  max-width: 100px;
+  aspect-ratio: 1;
   border-radius: 10px;
   border: 1px solid var(--border-primary);
   background: #fff;
@@ -609,17 +619,21 @@ mark {
   color: var(--text-secondary);
 }
 .engage-footer {
-  text-align: center;
+  display: flex;
+  justify-content: center;
+  gap: 16px;
   border-top: 1px solid var(--border-primary, #e5e7eb);
   padding-top: 12px;
 }
+.engage-today-dismiss,
 .engage-never {
   font-size: 12px;
   color: var(--text-tertiary);
   cursor: pointer;
-  opacity: 0.5;
+  opacity: 0.6;
   transition: opacity 150ms;
 }
+.engage-today-dismiss:hover,
 .engage-never:hover {
   opacity: 1;
   text-decoration: underline;

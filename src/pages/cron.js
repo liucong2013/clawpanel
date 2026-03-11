@@ -1,13 +1,14 @@
 /**
  * 定时任务管理
- * 通过 Gateway WebSocket RPC 直接管理计划任务（cron.list / cron.add / cron.update / cron.remove / cron.run）
+ * 通过 Gateway WebSocket RPC 管理（cron.list / cron.add / cron.update / cron.remove / cron.run）
+ * 注意：openclaw.json 不支持 cron.jobs 字段，定时任务只能通过 Gateway 在线管理
  */
 import { toast } from '../components/toast.js'
 import { showContentModal, showConfirm } from '../components/modal.js'
 import { icon } from '../lib/icons.js'
 import { onGatewayChange } from '../lib/app-state.js'
 import { wsClient } from '../lib/ws-client.js'
-import { api } from '../lib/tauri-api.js'
+import { api, invalidate } from '../lib/tauri-api.js'
 
 let _unsub = null
 
@@ -34,7 +35,15 @@ export async function render() {
       <h1 class="page-title">定时任务</h1>
       <p class="page-desc">创建计划任务，让 AI 按设定时间自动执行指令</p>
     </div>
-    <div id="cron-gw-warn" style="display:none"></div>
+    <div id="cron-gw-hint" style="display:none;margin-bottom:var(--space-md)">
+      <div class="config-section" style="border-left:3px solid var(--warning);padding:12px 16px">
+        <div style="display:flex;align-items:center;gap:8px;color:var(--text-secondary);font-size:var(--font-size-sm)">
+          ${icon('alert-circle', 16)}
+          <span>定时任务通过 Gateway 管理。请先启动 Gateway 后使用此功能。</span>
+          <a href="#/services" class="btn btn-sm btn-secondary" style="margin-left:auto;font-size:11px">服务管理</a>
+        </div>
+      </div>
+    </div>
     <div id="cron-stats" class="stat-cards" style="margin-bottom:var(--space-lg)"></div>
     <div class="config-actions" style="margin-bottom:var(--space-md)">
       <button class="btn btn-primary btn-sm" id="btn-new-task">+ 创建任务</button>
@@ -48,14 +57,17 @@ export async function render() {
   page.querySelector('#btn-new-task').onclick = () => openTaskDialog(null, page, state)
   page.querySelector('#btn-refresh-tasks').onclick = () => fetchJobs(page, state)
 
+  // 自动修复：移除可能被写入的无效 cron.jobs 字段
+  fixInvalidCronConfig()
+
   // 监听 Gateway 状态变化
   if (_unsub) _unsub()
   _unsub = onGatewayChange(() => {
-    updateGatewayWarning(page)
+    updateGatewayHint(page)
     fetchJobs(page, state)
   })
 
-  updateGatewayWarning(page)
+  updateGatewayHint(page)
   await fetchJobs(page, state)
 
   return page
@@ -65,35 +77,36 @@ export function cleanup() {
   if (_unsub) { _unsub(); _unsub = null }
 }
 
-// ── Gateway 连接检查 ──
+/** 自动移除无效的 cron.jobs 字段（之前版本错误写入，会导致 Gateway 崩溃） */
+async function fixInvalidCronConfig() {
+  try {
+    invalidate('read_openclaw_config')
+    const config = await api.readOpenclawConfig()
+    if (config?.cron?.jobs) {
+      delete config.cron.jobs
+      if (Object.keys(config.cron).length === 0) delete config.cron
+      await api.writeOpenclawConfig(config)
+      toast('已自动修复配置（移除无效的 cron.jobs）', 'info')
+    }
+  } catch {}
+}
 
 function isGatewayUp() {
-  return wsClient && wsClient._gatewayReady
+  return wsClient && wsClient.gatewayReady
 }
 
-function updateGatewayWarning(page) {
-  const el = page.querySelector('#cron-gw-warn')
+function updateGatewayHint(page) {
+  const el = page.querySelector('#cron-gw-hint')
   if (!el) return
-  if (isGatewayUp()) {
-    el.style.display = 'none'
-  } else {
-    el.style.display = ''
-    el.innerHTML = `
-      <div class="config-section" style="border-color:var(--warning);margin-bottom:var(--space-md)">
-        <div style="display:flex;align-items:center;gap:8px;color:var(--warning);font-size:var(--font-size-sm)">
-          ${icon('alert-circle', 16)}
-          Gateway 未连接，定时任务功能需要 Gateway 在线才能使用
-        </div>
-      </div>
-    `
-  }
+  el.style.display = isGatewayUp() ? 'none' : ''
 }
 
-// ── 数据加载（直连 Gateway RPC） ──
+// ── 数据加载（Gateway RPC） ──
 
 async function fetchJobs(page, state) {
   if (!isGatewayUp()) {
     state.jobs = []
+    state.loading = false
     renderStats(page, state)
     renderList(page, state)
     return
@@ -107,24 +120,18 @@ async function fetchJobs(page, state) {
     let jobs = res?.jobs || res
     if (!Array.isArray(jobs)) jobs = []
 
-    // 映射 Gateway CronJob 格式到 UI 格式
     state.jobs = jobs.map(j => ({
-      id: j.id,
-      name: j.name || '未命名',
+      id: j.name || j.id,
+      name: j.name || j.id || '未命名',
       description: j.description || '',
       message: j.payload?.message || j.payload?.text || '',
       payloadKind: j.payload?.kind || 'agentTurn',
       schedule: j.schedule || {},
       enabled: j.enabled !== false,
       agentId: j.agentId || null,
-      // 运行状态
       lastRunStatus: j.state?.lastRunStatus || j.state?.lastStatus || null,
       lastRunAtMs: j.state?.lastRunAtMs || null,
       lastError: j.state?.lastError || null,
-      lastDurationMs: j.state?.lastDurationMs || null,
-      nextRunAtMs: j.state?.nextRunAtMs || null,
-      consecutiveErrors: j.state?.consecutiveErrors || 0,
-      updatedAtMs: j.updatedAtMs || null,
     }))
   } catch (e) {
     toast('获取任务列表失败: ' + e, 'error')
@@ -240,7 +247,7 @@ function renderList(page, state) {
       const btn = e.currentTarget
       btn.disabled = true
       try {
-        await wsClient.request('cron.run', { id: jid, mode: 'force' })
+        await wsClient.request('cron.run', { name: jid })
         toast('任务已触发执行', 'success')
         setTimeout(() => fetchJobs(page, state), 2000)
       } catch (err) { toast('触发失败: ' + err, 'error') }
@@ -252,7 +259,7 @@ function renderList(page, state) {
       btn.disabled = true
       btn.innerHTML = icon('refresh-cw', 14)
       try {
-        await wsClient.request('cron.update', { id: jid, patch: { enabled: !job.enabled } })
+        await wsClient.request('cron.update', { name: jid, patch: { enabled: !job.enabled } })
         toast(job.enabled ? '已暂停' : '已启用', 'info')
         await fetchJobs(page, state)
       } catch (err) { toast('操作失败: ' + err, 'error'); btn.disabled = false; btn.innerHTML = job.enabled ? icon('pause', 14) : icon('play', 14) }
@@ -260,16 +267,16 @@ function renderList(page, state) {
 
     card.querySelector('[data-action="edit"]').onclick = () => openTaskDialog(job, page, state)
 
-    card.querySelector('[data-action="delete"]').onclick = async (e) => {
+    card.querySelector('[data-action="delete"]').onclick = async function() {
+      const btn = this
       const yes = await showConfirm(`确定删除任务「${job.name}」？`)
       if (!yes) return
-      const btn = e.currentTarget
-      btn.disabled = true
+      if (btn) btn.disabled = true
       try {
-        await wsClient.request('cron.remove', { id: jid })
+        await wsClient.request('cron.remove', { name: jid })
         toast('已删除', 'info')
         await fetchJobs(page, state)
-      } catch (err) { toast('删除失败: ' + err, 'error'); btn.disabled = false }
+      } catch (err) { toast('删除失败: ' + err, 'error'); if (btn) btn.disabled = false }
     }
   })
 }
@@ -278,10 +285,9 @@ function renderList(page, state) {
 
 async function openTaskDialog(job, page, state) {
   if (!isGatewayUp()) {
-    toast('Gateway 未连接，无法管理任务', 'warning')
+    toast('Gateway 未连接，无法管理定时任务。请先启动 Gateway', 'warning')
     return
   }
-
   const isEdit = !!job
   const initSchedule = extractCronExpr(job?.schedule) || '0 9 * * *'
   const formId = 'cron-form-' + Date.now()
@@ -291,18 +297,8 @@ async function openTaskDialog(job, page, state) {
     return `<button type="button" class="btn btn-sm ${selected ? 'btn-primary' : 'btn-secondary'} cron-shortcut" data-expr="${s.expr}">${s.text}</button>`
   }).join('')
 
-  // 加载 agent 列表用于选择器
-  let agents = []
-  try {
-    const res = await api.listAgents()
-    agents = Array.isArray(res) ? res : (res?.agents || [])
-  } catch {}
-
-  const agentOptionsHtml = agents.length
-    ? `<option value="">默认 Agent</option>` + agents.map(a =>
-        `<option value="${escapeAttr(a.id)}" ${job?.agentId === a.id ? 'selected' : ''}>${escapeHtml(a.name || a.id)}</option>`
-      ).join('')
-    : `<option value="">默认 Agent（未检测到其他 Agent）</option>`
+  // 先用默认选项，弹窗后异步加载 Agent 列表
+  const agentOptionsHtml = `<option value="" ${!job?.agentId ? 'selected' : ''}>默认 Agent</option>${job?.agentId ? `<option value="${escapeAttr(job.agentId)}" selected>${escapeHtml(job.agentId)}</option>` : ''}`
 
   const content = `
     <form id="${formId}" style="display:flex;flex-direction:column;gap:var(--space-md)">
@@ -343,6 +339,18 @@ async function openTaskDialog(job, page, state) {
     ],
     width: 500,
   })
+
+  // 异步加载 Agent 列表并更新下拉框（不阻塞弹窗显示）
+  api.listAgents().then(res => {
+    const agents = Array.isArray(res) ? res : (res?.agents || [])
+    if (!agents.length) return
+    const select = modal.querySelector('select[name="agentId"]')
+    if (!select) return
+    const currentVal = select.value
+    select.innerHTML = `<option value="">默认 Agent</option>` + agents.map(a =>
+      `<option value="${escapeAttr(a.id)}" ${a.id === (job?.agentId || currentVal) ? 'selected' : ''}>${escapeHtml(a.name || a.id)}</option>`
+    ).join('')
+  }).catch(() => {})
 
   // 快捷预设按钮
   modal.querySelectorAll('.cron-shortcut').forEach(btn => {
@@ -396,7 +404,7 @@ async function openTaskDialog(job, page, state) {
         patch.schedule = { kind: 'cron', expr: schedule }
         patch.payload = { kind: 'agentTurn', message }
         if (agentId) patch.agentId = agentId
-        await wsClient.request('cron.update', { id: job.id, patch })
+        await wsClient.request('cron.update', { name: job.id, patch })
         toast('任务已更新', 'success')
       } else {
         const params = {

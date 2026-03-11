@@ -93,11 +93,17 @@ pub fn run() {
             config::write_panel_config,
             config::get_npm_registry,
             config::set_npm_registry,
+            config::check_git,
+            config::auto_install_git,
+            config::configure_git_https,
+            config::invalidate_path_cache,
             // 设备密钥 + Gateway 握手
             device::create_connect_frame,
             // 设备配对
             pairing::auto_pair_device,
             pairing::check_pairing_status,
+            pairing::pairing_list_channel,
+            pairing::pairing_approve_channel,
             // 服务
             service::get_services_status,
             service::start_service,
@@ -149,6 +155,8 @@ pub fn run() {
             messaging::toggle_messaging_platform,
             messaging::verify_bot_token,
             messaging::list_configured_platforms,
+            messaging::get_channel_plugin_status,
+            messaging::install_channel_plugin,
             messaging::install_qqbot_plugin,
             // Skills 管理（openclaw skills CLI）
             skills::skills_list,

@@ -7,67 +7,72 @@
 }
 
 .dashboard-overview {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-xl);
   margin-bottom: var(--space-xl);
 }
 
-.overview-section {
-  display: flex;
-  flex-direction: column;
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: var(--space-md);
 }
 
-.overview-item {
+.overview-card {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-md);
   padding: var(--space-md) var(--space-lg);
   background: var(--bg-card);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-lg);
   transition: all var(--transition-fast);
 }
-
-.overview-item:hover {
+.overview-card:hover {
   background: var(--bg-card-hover);
   border-color: var(--border-focus);
 }
-
-.overview-label {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
-  font-weight: 500;
+.overview-card[data-nav]:hover {
+  border-color: var(--accent);
 }
 
-.overview-label svg {
-  width: 16px;
-  height: 16px;
+.overview-card-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.overview-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.overview-card-title {
+  font-size: var(--font-size-xs);
   color: var(--text-tertiary);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-bottom: 2px;
 }
 
-.overview-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.overview-status {
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  margin-right: 4px;
-}
-
-.overview-value {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  font-size: var(--font-size-sm);
-  font-family: var(--font-mono);
+.overview-card-value {
+  font-size: var(--font-size-lg);
+  font-weight: 700;
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-card-meta {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.overview-card-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  align-self: center;
 }
 
 /* 服务卡片 */
@@ -1508,13 +1513,12 @@ details.docker-other-section[open] > .docker-other-toggle::before {
 
 /* === 移动端响应式 === */
 @media (max-width: 768px) {
-  .dashboard-overview {
-    grid-template-columns: 1fr;
-    gap: var(--space-md);
+  .overview-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-sm);
   }
-  .overview-item {
+  .overview-card {
     padding: var(--space-sm) var(--space-md);
-    font-size: 13px;
   }
   .overview-value {
     font-size: 13px;
@@ -1568,10 +1572,11 @@ details.docker-other-section[open] > .docker-other-toggle::before {
 }
 
 @media (max-width: 480px) {
-  .overview-item {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
+  .overview-grid {
+    grid-template-columns: 1fr;
+  }
+  .overview-card {
+    gap: var(--space-sm);
   }
 }
 

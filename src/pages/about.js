@@ -402,19 +402,14 @@ async function checkHotUpdate(cards, panelVersion) {
         }
       })
     } else if (!info.compatible) {
-      meta.innerHTML = '<span style="color:var(--text-tertiary)">需要更新完整安装包</span> <a class="btn btn-secondary btn-sm" href="https://github.com/qingchencloud/clawpanel/releases" target="_blank" rel="noopener" style="padding:2px 8px;font-size:var(--font-size-xs)">下载</a>'
+      meta.innerHTML = '<span style="color:var(--text-tertiary)">需要更新完整安装包</span> <a class="btn btn-primary btn-sm" href="https://claw.qt.cool" target="_blank" rel="noopener" style="padding:2px 8px;font-size:var(--font-size-xs)">前往官网下载</a> <a class="btn btn-secondary btn-sm" href="https://github.com/qingchencloud/clawpanel/releases" target="_blank" rel="noopener" style="padding:2px 8px;font-size:var(--font-size-xs)">GitHub</a>'
     } else {
       meta.innerHTML = '<span style="color:var(--success)">已是最新</span>'
     }
   } catch (err) {
     const meta = el()
     if (!meta) return
-    const msg = String(err?.message || err || '')
-    if (msg.includes('403') || msg.includes('404') || msg.includes('rate limit')) {
-      meta.innerHTML = '<span style="color:var(--text-tertiary)">暂无法检查更新</span>'
-    } else {
-      meta.innerHTML = '<span style="color:var(--text-tertiary)">检查更新失败</span>'
-    }
+    meta.innerHTML = `<span style="color:var(--text-tertiary)">暂无法检查更新</span> <a class="btn btn-secondary btn-sm" href="https://claw.qt.cool" target="_blank" rel="noopener" style="padding:2px 8px;font-size:var(--font-size-xs)">前往官网下载</a>`
   }
 }
 
@@ -482,6 +477,7 @@ const PROJECTS = [
     name: 'ClawPanel',
     desc: 'OpenClaw 可视化管理面板，Tauri v2 桌面应用',
     url: 'https://github.com/qingchencloud/clawpanel',
+    gitee: 'https://gitee.com/QtCodeCreators/clawpanel',
   },
   {
     name: 'ClawApp',
@@ -507,6 +503,7 @@ function renderProjects(page) {
       </div>
       <div class="service-actions">
         <a class="btn btn-secondary btn-sm" href="${p.url}" target="_blank" rel="noopener">GitHub</a>
+        ${p.gitee ? `<a class="btn btn-secondary btn-sm" href="${p.gitee}" target="_blank" rel="noopener">国内镜像</a>` : ''}
       </div>
     </div>
   `).join('')
@@ -530,6 +527,9 @@ function renderContribute(page) {
       <a class="btn btn-secondary btn-sm" href="https://github.com/qingchencloud/clawpanel/pulls" target="_blank" rel="noopener">提交 PR</a>
       <a class="btn btn-secondary btn-sm" href="https://github.com/qingchencloud/clawpanel/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">贡献指南</a>
       <a class="btn btn-secondary btn-sm" href="https://github.com/qingchencloud/clawpanel/issues" target="_blank" rel="noopener">查看 Issues</a>
+    </div>
+    <div style="margin-top:8px;font-size:var(--font-size-xs);color:var(--text-tertiary)">
+      国内镜像：<a href="https://gitee.com/QtCodeCreators/clawpanel" target="_blank" rel="noopener" style="color:var(--accent)">Gitee</a>（无法访问 GitHub 时可用）
     </div>
   `
 }

@@ -22,16 +22,7 @@ const QTCOOL = {
   defaultKey: 'sk-0JDu7hyc51ZKD4iNebpFu07EUEhXmVVc',
   site: 'https://gpt.qt.cool/',
   usageUrl: 'https://gpt.qt.cool/user?key=',
-  models: [
-    { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', hot: true },
-    { id: 'gpt-5.2', name: 'GPT-5.2' },
-    { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max' },
-    { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini' },
-    { id: 'gpt-5.1-codex', name: 'GPT-5.1 Codex' },
-    { id: 'gpt-5.1', name: 'GPT-5.1' },
-    { id: 'gpt-5-codex', name: 'GPT-5 Codex' },
-    { id: 'gpt-5', name: 'GPT-5' },
-  ]
+  models: []  // 始终从 API 动态获取最新模型列表
 }
 
 // ── 图片文件存储（通过 Tauri 后端持久化到 ~/.openclaw/clawpanel/images/）──
@@ -64,10 +55,47 @@ const DEFAULT_MODE = 'execute'
 
 // ── API 类型 ──
 const API_TYPES = [
-  { value: 'openai', label: 'OpenAI 兼容 (最常用)' },
-  { value: 'anthropic', label: 'Anthropic 原生' },
+  { value: 'openai-completions', label: 'OpenAI 兼容 (最常用)' },
+  { value: 'anthropic-messages', label: 'Anthropic 原生' },
   { value: 'google-gemini', label: 'Google Gemini' },
 ]
+
+function normalizeApiType(raw) {
+  const type = (raw || '').trim()
+  if (type === 'anthropic' || type === 'anthropic-messages') return 'anthropic-messages'
+  if (type === 'google-gemini') return 'google-gemini'
+  if (type === 'openai' || type === 'openai-completions' || type === 'openai-responses') return 'openai-completions'
+  return 'openai-completions'
+}
+
+function requiresApiKey(apiType) {
+  const type = normalizeApiType(apiType)
+  return type === 'anthropic-messages' || type === 'google-gemini'
+}
+
+function apiHintText(apiType) {
+  return {
+    'openai-completions': '自动兼容 Chat Completions 和 Responses API；Ollama 可留空 API Key',
+    'anthropic-messages': '使用 Anthropic Messages API（/v1/messages）',
+    'google-gemini': '使用 Gemini generateContent API',
+  }[normalizeApiType(apiType)] || '自动兼容 Chat Completions 和 Responses API；Ollama 可留空 API Key'
+}
+
+function apiBasePlaceholder(apiType) {
+  return {
+    'openai-completions': 'https://api.openai.com/v1 或 http://127.0.0.1:11434',
+    'anthropic-messages': 'https://api.anthropic.com',
+    'google-gemini': 'https://generativelanguage.googleapis.com/v1beta',
+  }[normalizeApiType(apiType)] || 'https://api.openai.com/v1'
+}
+
+function apiKeyPlaceholder(apiType) {
+  return {
+    'openai-completions': 'sk-...（Ollama 可留空）',
+    'anthropic-messages': 'sk-ant-...',
+    'google-gemini': 'AIza...',
+  }[normalizeApiType(apiType)] || 'sk-...'
+}
 
 // ── 系统提示词 ──
 const DEFAULT_NAME = '晴辰助手'
@@ -1315,7 +1343,7 @@ function loadConfig() {
   if (!_config.assistantPersonality) _config.assistantPersonality = DEFAULT_PERSONALITY
   if (!_config.tools) _config.tools = { terminal: false, fileOps: false, webSearch: false }
   if (!_config.mode) _config.mode = DEFAULT_MODE
-  if (!_config.apiType) _config.apiType = 'openai'
+  _config.apiType = normalizeApiType(_config.apiType)
   if (_config.autoRounds === undefined) _config.autoRounds = 8
   if (!Array.isArray(_config.knowledgeFiles)) _config.knowledgeFiles = []
   return _config
@@ -1397,13 +1425,18 @@ function autoTitle(session) {
 // ── AI API 调用（自动兼容 Chat Completions + Responses API）──
 
 function cleanBaseUrl(raw, apiType) {
-  let base = raw.replace(/\/+$/, '')
+  let base = (raw || '').replace(/\/+$/, '')
+  base = base.replace(/\/api\/chat\/?$/, '')
+  base = base.replace(/\/api\/generate\/?$/, '')
+  base = base.replace(/\/api\/tags\/?$/, '')
+  base = base.replace(/\/api\/?$/, '')
   base = base.replace(/\/chat\/completions\/?$/, '')
   base = base.replace(/\/completions\/?$/, '')
   base = base.replace(/\/responses\/?$/, '')
   base = base.replace(/\/messages\/?$/, '')
-  const type = apiType || _config.apiType || 'openai'
-  if (type === 'anthropic') {
+  base = base.replace(/\/models\/?$/, '')
+  const type = normalizeApiType(apiType || _config.apiType)
+  if (type === 'anthropic-messages') {
     // Anthropic: https://api.anthropic.com/v1
     if (!base.endsWith('/v1')) base += '/v1'
     return base
@@ -1412,24 +1445,30 @@ function cleanBaseUrl(raw, apiType) {
     // Gemini: https://generativelanguage.googleapis.com/v1beta
     return base
   }
-  if (!base.endsWith('/v1')) base = base.replace(/\/v1\/.*$/, '/v1')
+  if (/:(11434)$/i.test(base)) return `${base}/v1`
+  if (!base.endsWith('/v1')) {
+    if (/\/v1\/.+/.test(base)) base = base.replace(/\/v1\/.*$/, '/v1')
+    else base += '/v1'
+  }
   return base
 }
 
 function authHeaders(apiType, apiKey) {
-  const type = apiType || _config.apiType || 'openai'
+  const type = normalizeApiType(apiType || _config.apiType)
   const key = apiKey || _config.apiKey || ''
-  if (type === 'anthropic') {
-    return {
+  if (type === 'anthropic-messages') {
+    const headers = {
       'Content-Type': 'application/json',
-      'x-api-key': key,
       'anthropic-version': '2023-06-01',
     }
+    if (key) headers['x-api-key'] = key
+    return headers
   }
-  return {
+  const headers = {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${key}`,
   }
+  if (key) headers['Authorization'] = `Bearer ${key}`
+  return headers
 }
 
 // 超时常量
@@ -1438,11 +1477,12 @@ const TIMEOUT_CHUNK = 30_000     // 流式 chunk 间隔超时 30 秒
 const TIMEOUT_CONNECT = 30_000   // 连接超时 30 秒
 
 async function callAI(messages, onChunk) {
-  if (!_config.baseUrl || !_config.apiKey || !_config.model) {
+  const apiType = normalizeApiType(_config.apiType)
+  if (!_config.baseUrl || !_config.model || (requiresApiKey(apiType) && !_config.apiKey)) {
     throw new Error('请先配置 AI 模型（点击右上角设置按钮）')
   }
 
-  const base = cleanBaseUrl(_config.baseUrl)
+  const base = cleanBaseUrl(_config.baseUrl, apiType)
   _abortController = new AbortController()
   const allMessages = [{ role: 'system', content: buildSystemPrompt() }, ...messages]
 
@@ -1454,9 +1494,7 @@ async function callAI(messages, onChunk) {
   }, TIMEOUT_TOTAL)
 
   try {
-    const apiType = _config.apiType || 'openai'
-
-    if (apiType === 'anthropic') {
+    if (apiType === 'anthropic-messages') {
       await callAnthropicMessages(base, allMessages, onChunk)
       return
     }
@@ -2015,12 +2053,12 @@ async function executeToolWithSafety(toolName, args, tcForConfirm) {
 
 // 带工具调用的 AI 请求（非流式，用于 tool_calls 检测循环）
 async function callAIWithTools(messages, onStatus, onToolProgress) {
-  if (!_config.baseUrl || !_config.apiKey || !_config.model) {
+  const apiType = normalizeApiType(_config.apiType)
+  if (!_config.baseUrl || !_config.model || (requiresApiKey(apiType) && !_config.apiKey)) {
     throw new Error('请先配置 AI 模型（点击右上角设置按钮）')
   }
 
-  const apiType = _config.apiType || 'openai'
-  const base = cleanBaseUrl(_config.baseUrl)
+  const base = cleanBaseUrl(_config.baseUrl, apiType)
   const tools = getEnabledTools()
   let currentMessages = [{ role: 'system', content: buildSystemPrompt() }, ...messages]
   const toolHistory = []
@@ -2054,7 +2092,7 @@ async function callAIWithTools(messages, onStatus, onToolProgress) {
     onStatus(round === 0 ? 'AI 思考中...' : `AI 处理工具结果 (第${round + 1}轮)...`)
 
     // ── Anthropic 工具调用 ──
-    if (apiType === 'anthropic') {
+    if (apiType === 'anthropic-messages') {
       const systemMsg = currentMessages.find(m => m.role === 'system')?.content || ''
       const chatMsgs = currentMessages.filter(m => m.role !== 'system')
       const body = {
@@ -2499,7 +2537,7 @@ function showSettings() {
           <div style="display:flex;gap:10px">
             <div class="form-group" style="flex:1">
               <label class="form-label">API Base URL</label>
-              <input class="form-input" id="ast-baseurl" value="${escHtml(c.baseUrl)}" placeholder="https://api.openai.com/v1">
+              <input class="form-input" id="ast-baseurl" value="${escHtml(c.baseUrl)}" placeholder="${escHtml(apiBasePlaceholder(c.apiType))}">
             </div>
             <div class="form-group" style="width:170px">
               <label class="form-label">API 类型</label>
@@ -2511,7 +2549,7 @@ function showSettings() {
           <div style="display:flex;gap:10px;align-items:flex-end">
             <div class="form-group" style="flex:1;margin-bottom:0">
               <label class="form-label">API Key</label>
-              <input class="form-input" id="ast-apikey" type="password" value="${escHtml(c.apiKey)}" placeholder="sk-...">
+              <input class="form-input" id="ast-apikey" type="password" value="${escHtml(c.apiKey)}" placeholder="${escHtml(apiKeyPlaceholder(c.apiType))}">
             </div>
             <div style="display:flex;gap:6px;padding-bottom:1px">
               <button class="btn btn-sm btn-secondary" id="ast-btn-test" title="测试连通性">测试</button>
@@ -2533,11 +2571,7 @@ function showSettings() {
               <input class="form-input" id="ast-temp" type="number" value="${c.temperature || 0.7}" min="0" max="2" step="0.1">
             </div>
           </div>
-          <div class="form-hint" id="ast-api-hint" style="margin-top:-4px">${{
-            openai: '自动兼容 Chat Completions 和 Responses API',
-            anthropic: '使用 Anthropic Messages API（/v1/messages）',
-            'google-gemini': '使用 Gemini generateContent API',
-          }[c.apiType || 'openai']}</div>
+          <div class="form-hint" id="ast-api-hint" style="margin-top:-4px">${apiHintText(c.apiType)}</div>
 
           <div id="ast-qtcool-promo" style="margin-top:14px;border-radius:12px;background:linear-gradient(135deg,#0f0c29 0%,#302b63 50%,#24243e 100%);color:#fff;position:relative;overflow:hidden;box-shadow:0 4px 20px rgba(48,43,99,0.3)">
             <div style="position:absolute;top:-40px;right:-40px;width:160px;height:160px;border-radius:50%;background:radial-gradient(circle,rgba(99,102,241,0.15) 0%,transparent 70%);pointer-events:none"></div>
@@ -2704,13 +2738,10 @@ function showSettings() {
   const baseUrlInput = overlay.querySelector('#ast-baseurl')
   const apiKeyInput = overlay.querySelector('#ast-apikey')
   apiTypeSelect.addEventListener('change', () => {
-    const v = apiTypeSelect.value
-    const hints = { openai: '自动兼容 Chat Completions 和 Responses API', anthropic: '使用 Anthropic Messages API（/v1/messages）', 'google-gemini': '使用 Gemini generateContent API' }
-    const placeholders = { openai: 'https://api.openai.com/v1', anthropic: 'https://api.anthropic.com', 'google-gemini': 'https://generativelanguage.googleapis.com/v1beta' }
-    const keyPlaceholders = { openai: 'sk-...', anthropic: 'sk-ant-...', 'google-gemini': 'AIza...' }
-    apiHintEl.textContent = hints[v] || hints.openai
-    baseUrlInput.placeholder = placeholders[v] || placeholders.openai
-    apiKeyInput.placeholder = keyPlaceholders[v] || keyPlaceholders.openai
+    const v = normalizeApiType(apiTypeSelect.value)
+    apiHintEl.textContent = apiHintText(v)
+    baseUrlInput.placeholder = apiBasePlaceholder(v)
+    apiKeyInput.placeholder = apiKeyPlaceholder(v)
   })
 
   // 灵魂来源切换
@@ -2969,7 +3000,7 @@ function showSettings() {
     overlay.querySelector('#ast-baseurl').value = QTCOOL.baseUrl
     overlay.querySelector('#ast-apikey').value = key
     overlay.querySelector('#ast-model').value = selectedModel
-    overlay.querySelector('#ast-apitype').value = 'openai'
+    overlay.querySelector('#ast-apitype').value = 'openai-completions'
     qtcoolStatus.innerHTML = `<span style="color:#34d399">${statusIcon('ok', 14)} 助手已配置为 ${selectedModel}</span>`
     toast('助手已接入 gpt.qt.cool — ' + selectedModel, 'success')
 
@@ -2992,7 +3023,7 @@ function showSettings() {
             baseUrl: QTCOOL.baseUrl,
             apiKey: key,
             api: 'openai-completions',
-            models: QTCOOL.models.map(m => ({ id: m.id, name: m.name, contextWindow: 128000, reasoning: m.id.includes('codex') }))
+            models: [{ id: selectedModel, name: selectedModel, contextWindow: 128000, reasoning: selectedModel.includes('codex') }]
           }
         } else {
           config.models.providers.qtcool.apiKey = key
@@ -3029,9 +3060,9 @@ function showSettings() {
     const baseUrl = overlay.querySelector('#ast-baseurl').value.trim()
     const apiKey = overlay.querySelector('#ast-apikey').value.trim()
     const model = overlay.querySelector('#ast-model').value.trim()
-    const selApiType = overlay.querySelector('#ast-apitype').value || 'openai'
-    if (!baseUrl || !apiKey) {
-      resultEl.innerHTML = '<span style="color:var(--warning)">请先填写 Base URL 和 API Key</span>'
+    const selApiType = normalizeApiType(overlay.querySelector('#ast-apitype').value || 'openai-completions')
+    if (!baseUrl || (requiresApiKey(selApiType) && !apiKey)) {
+      resultEl.innerHTML = '<span style="color:var(--warning)">' + escHtml(requiresApiKey(selApiType) ? '请先填写 Base URL 和 API Key' : '请先填写 Base URL') + '</span>'
       return
     }
     if (!model) {
@@ -3048,7 +3079,7 @@ function showSettings() {
     let respStatus = 0, respBody = '', reply = '', usedApi = '', reqUrl = '', reqBody = {}
 
     try {
-      if (selApiType === 'anthropic') {
+      if (selApiType === 'anthropic-messages') {
         usedApi = 'Anthropic Messages'
         reqUrl = base + '/messages'
         reqBody = { model, messages: [{ role: 'user', content: '你好，请用一句话回复' }], max_tokens: 200 }
@@ -3120,20 +3151,20 @@ function showSettings() {
     const btn = e.target
     const baseUrl = overlay.querySelector('#ast-baseurl').value.trim()
     const apiKey = overlay.querySelector('#ast-apikey').value.trim()
-    if (!baseUrl || !apiKey) {
-      resultEl.innerHTML = '<span style="color:var(--warning)">请先填写 Base URL 和 API Key</span>'
+    const selApiType = normalizeApiType(overlay.querySelector('#ast-apitype').value || 'openai-completions')
+    if (!baseUrl || (requiresApiKey(selApiType) && !apiKey)) {
+      resultEl.innerHTML = '<span style="color:var(--warning)">' + escHtml(requiresApiKey(selApiType) ? '请先填写 Base URL 和 API Key' : '请先填写 Base URL') + '</span>'
       return
     }
     btn.disabled = true
     btn.textContent = '获取中...'
     resultEl.innerHTML = '<span style="color:var(--text-tertiary)">正在获取模型列表...</span>'
-    const selApiType = overlay.querySelector('#ast-apitype').value || 'openai'
     try {
       const base = cleanBaseUrl(baseUrl, selApiType)
       const hdrs = authHeaders(selApiType, apiKey)
       let models = []
 
-      if (selApiType === 'anthropic') {
+      if (selApiType === 'anthropic-messages') {
         // Anthropic: GET /v1/models
         const resp = await fetch(base + '/models', { headers: hdrs, signal: AbortSignal.timeout(10000) })
         if (!resp.ok) {
@@ -3211,13 +3242,13 @@ function showSettings() {
             const raw = await api.assistantReadFile(home + '/.openclaw/agents/' + agentId + '/agent/models.json')
             const data = JSON.parse(raw)
             for (const [pid, p] of Object.entries(data.providers || {})) {
-              if (p.baseUrl && p.apiKey) {
+              if (p.baseUrl) {
                 providers.push({
                   source: 'Agent: ' + agentId,
                   name: pid,
                   baseUrl: p.baseUrl,
-                  apiKey: p.apiKey,
-                  apiType: 'openai',
+                  apiKey: p.apiKey || '',
+                  apiType: normalizeApiType(p.api),
                   models: (p.models || []).map(m => m.id || m.name).filter(Boolean),
                 })
               }
@@ -3231,14 +3262,14 @@ function showSettings() {
         const raw = await api.assistantReadFile(home + '/.openclaw/openclaw.json')
         const config = JSON.parse(raw)
         for (const [pid, p] of Object.entries(config.models?.providers || {})) {
-          if (p.baseUrl && p.apiKey && !providers.find(x => x.name === pid)) {
+          if (p.baseUrl && !providers.find(x => x.name === pid)) {
             providers.push({
               source: '全局配置',
               name: pid,
               baseUrl: p.baseUrl,
-              apiKey: p.apiKey,
-              apiType: 'openai',
-              models: [],
+              apiKey: p.apiKey || '',
+              apiType: normalizeApiType(p.api),
+              models: (p.models || []).map(m => m.id || m.name).filter(Boolean),
             })
           }
         }
@@ -3323,7 +3354,7 @@ function showSettings() {
     _config.apiKey = overlay.querySelector('#ast-apikey').value.trim()
     _config.model = overlay.querySelector('#ast-model').value.trim()
     _config.temperature = parseFloat(overlay.querySelector('#ast-temp').value) || 0.7
-    _config.apiType = overlay.querySelector('#ast-apitype').value || 'openai'
+    _config.apiType = normalizeApiType(overlay.querySelector('#ast-apitype').value || 'openai-completions')
     // 工具开关
     _config.tools.terminal = overlay.querySelector('#ast-tool-terminal').checked
     _config.tools.fileOps = overlay.querySelector('#ast-tool-fileops').checked

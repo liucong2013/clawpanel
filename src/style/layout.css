@@ -402,14 +402,14 @@
 
 /* Gateway 未启动引导横幅 */
 .gw-banner {
-  background: var(--warning, #f59e0b);
-  color: #000;
+  background: linear-gradient(90deg, #fbbf24 0%, #f59e0b 100%);
+  color: #78350f;
   padding: 8px 16px;
   font-size: var(--font-size-sm);
   z-index: 100;
   transition: all 300ms ease;
   overflow: hidden;
-  max-height: 50px;
+  max-height: 80px;
 }
 .gw-banner-hidden {
   max-height: 0;

@@ -46,6 +46,32 @@ function escapeHtml(str) {
     .replace(/'/g, '&#x27;')
 }
 
+// 预加载 Tauri convertFileSrc
+let _convertFileSrc = null
+if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+  import('@tauri-apps/api/core').then(m => { _convertFileSrc = m.convertFileSrc }).catch(() => {})
+}
+
+/** 将本地文件路径转换为可加载的 URL */
+function resolveImageSrc(src) {
+  if (!src) return src
+  // 已经是 http/https/data URL → 直接返回
+  if (/^(https?|data|blob):/.test(src)) return src
+  // Windows 绝对路径 (C:\... or C:/...)
+  const isWinPath = /^[A-Za-z]:[\\/]/.test(src)
+  // Unix 绝对路径 (/Users/... /home/... /tmp/...)
+  const isUnixPath = /^\/[^/]/.test(src)
+  if (isWinPath || isUnixPath) {
+    // Tauri 环境：使用 convertFileSrc 转换为 asset protocol URL
+    if (_convertFileSrc) {
+      try { return _convertFileSrc(src) } catch {}
+    }
+    // Tauri 未就绪或 Web 模式：返回原始路径（onerror 会处理显示）
+    return src
+  }
+  return src
+}
+
 export function renderMarkdown(text) {
   if (!text) return ''
   let html = text
@@ -122,7 +148,10 @@ function inlineFormat(text) {
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/__(.+?)__/g, '<strong>$1</strong>')
     .replace(/_(.+?)_/g, '<em>$1</em>')
-    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="msg-img" />')
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => {
+      const safeSrc = resolveImageSrc(src.trim())
+      return `<img src="${safeSrc}" alt="${alt}" class="msg-img" onerror="this.onerror=null;this.style.display='none';this.insertAdjacentHTML('afterend','<span style=\\'color:var(--text-tertiary);font-size:12px\\'>[图片无法加载: ${escapeHtml(src)}]</span>')" />`
+    })
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
       const safe = /^https?:|^mailto:/i.test(url.trim()) ? url : '#'
       return `<a href="${safe}" target="_blank" rel="noopener">${label}</a>`

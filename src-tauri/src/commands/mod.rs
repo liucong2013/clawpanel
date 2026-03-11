@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 pub mod agent;
 pub mod assistant;
@@ -20,7 +20,8 @@ pub fn openclaw_dir() -> PathBuf {
 }
 
 /// 缓存 enhanced_path 结果，避免每次调用都扫描文件系统
-static ENHANCED_PATH_CACHE: OnceLock<String> = OnceLock::new();
+/// 使用 RwLock 替代 OnceLock，支持运行时刷新缓存
+static ENHANCED_PATH_CACHE: RwLock<Option<String>> = RwLock::new(None);
 
 /// Tauri 应用启动时 PATH 可能不完整：
 /// - macOS 从 Finder 启动时 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin
@@ -28,7 +29,26 @@ static ENHANCED_PATH_CACHE: OnceLock<String> = OnceLock::new();
 ///
 /// 补充 Node.js / npm 常见安装路径
 pub fn enhanced_path() -> String {
-    ENHANCED_PATH_CACHE.get_or_init(build_enhanced_path).clone()
+    // 先尝试读缓存
+    if let Ok(guard) = ENHANCED_PATH_CACHE.read() {
+        if let Some(ref cached) = *guard {
+            return cached.clone();
+        }
+    }
+    // 缓存为空，重新构建
+    let path = build_enhanced_path();
+    if let Ok(mut guard) = ENHANCED_PATH_CACHE.write() {
+        *guard = Some(path.clone());
+    }
+    path
+}
+
+/// 刷新 enhanced_path 缓存，使新设置的 Node.js 路径立即生效（无需重启应用）
+pub fn refresh_enhanced_path() {
+    let new_path = build_enhanced_path();
+    if let Ok(mut guard) = ENHANCED_PATH_CACHE.write() {
+        *guard = Some(new_path);
+    }
 }
 
 fn build_enhanced_path() -> String {
@@ -242,16 +262,19 @@ fn build_enhanced_path() -> String {
         }
 
         let mut parts: Vec<&str> = vec![];
-        if !current.is_empty() {
-            parts.push(&current);
-        }
+        // 用户自定义路径优先级最高
         if let Some(ref cp) = custom_path {
             parts.push(cp.as_str());
         }
+        // 然后是默认扫描到的路径
         for p in &extra {
             if std::path::Path::new(p).exists() {
                 parts.push(p.as_str());
             }
+        }
+        // 最后是系统 PATH
+        if !current.is_empty() {
+            parts.push(&current);
         }
         parts.join(";")
     }

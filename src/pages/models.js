@@ -21,6 +21,7 @@ const PROVIDER_PRESETS = [
   { key: 'anthropic', label: 'Anthropic 官方', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages' },
   { key: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', api: 'openai-completions' },
   { key: 'google', label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', api: 'google-gemini' },
+  { key: 'ollama', label: 'Ollama (本地)', baseUrl: 'http://127.0.0.1:11434/v1', api: 'openai-completions' },
 ]
 
 // gpt.qt.cool 推广配置
@@ -31,16 +32,7 @@ const QTCOOL = {
   usageUrl: 'https://gpt.qt.cool/user?key=',
   providerKey: 'qtcool',
   api: 'openai-completions',
-  models: [
-    { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', contextWindow: 128000, reasoning: true },
-    { id: 'gpt-5.2', name: 'GPT-5.2', contextWindow: 128000 },
-    { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max', contextWindow: 128000, reasoning: true },
-    { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini', contextWindow: 128000, reasoning: true },
-    { id: 'gpt-5.1-codex', name: 'GPT-5.1 Codex', contextWindow: 128000, reasoning: true },
-    { id: 'gpt-5.1', name: 'GPT-5.1', contextWindow: 128000 },
-    { id: 'gpt-5-codex', name: 'GPT-5 Codex', contextWindow: 128000, reasoning: true },
-    { id: 'gpt-5', name: 'GPT-5', contextWindow: 128000 },
-  ]
+  models: []  // 不使用硬编码模型列表，始终从 API 动态获取最新列表
 }
 
 // 常用模型预设（按服务商分组）
@@ -61,6 +53,11 @@ const MODEL_PRESETS = {
   google: [
     { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', contextWindow: 1000000, reasoning: true },
     { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextWindow: 1000000 },
+  ],
+  ollama: [
+    { id: 'qwen2.5:7b', name: 'Qwen 2.5 7B', contextWindow: 32768 },
+    { id: 'llama3.2', name: 'Llama 3.2', contextWindow: 8192 },
+    { id: 'gemma3', name: 'Gemma 3', contextWindow: 32768 },
   ],
 }
 
@@ -133,6 +130,15 @@ async function loadConfig(page, state) {
   const listEl = page.querySelector('#providers-list')
   try {
     state.config = await api.readOpenclawConfig()
+    // 自动修复现有配置中的 baseUrl（如 Ollama 缺少 /v1），一次性迁移
+    const before = JSON.stringify(state.config?.models?.providers || {})
+    normalizeProviderUrls(state.config)
+    const after = JSON.stringify(state.config?.models?.providers || {})
+    if (before !== after) {
+      console.log('[models] 自动修复了服务商 baseUrl，正在保存...')
+      await api.writeOpenclawConfig(state.config)
+      toast('已自动修复模型接口地址（如 Ollama /v1）', 'info')
+    }
     renderDefaultBar(page, state)
     renderProviders(page, state)
   } catch (e) {
@@ -408,11 +414,41 @@ function autoSave(state) {
   _saveTimer = setTimeout(() => doAutoSave(state), 300)
 }
 
+/** 保存前规范化所有服务商的 baseUrl，确保 Gateway 能正确调用 */
+function normalizeProviderUrls(config) {
+  const providers = config?.models?.providers
+  if (!providers) return
+  for (const [, p] of Object.entries(providers)) {
+    if (!p.baseUrl) continue
+    let url = p.baseUrl.replace(/\/+$/, '')
+    // 去掉尾部的已知端点路径（用户可能粘贴了完整 URL）
+    for (const suffix of ['/api/chat', '/api/generate', '/api/tags', '/api', '/chat/completions', '/completions', '/responses', '/messages', '/models']) {
+      if (url.endsWith(suffix)) { url = url.slice(0, -suffix.length); break }
+    }
+    url = url.replace(/\/+$/, '')
+    const apiType = (p.api || 'openai-completions').toLowerCase()
+    if (apiType === 'anthropic-messages') {
+      if (!url.endsWith('/v1')) url += '/v1'
+    } else if (apiType !== 'google-gemini') {
+      // Ollama 端口检测：11434 默认需要加 /v1
+      if (/:11434$/.test(url)) url += '/v1'
+      // 其他 OpenAI 兼容: 确保有 /v1
+      if (!url.endsWith('/v1')) {
+        const idx = url.indexOf('/v1/')
+        if (idx >= 0) url = url.slice(0, idx + 3)
+        else url += '/v1'
+      }
+    }
+    p.baseUrl = url
+  }
+}
+
 // 仅保存配置，不重启 Gateway（用于测试结果等元数据持久化）
 async function saveConfigOnly(state) {
   try {
     const primary = getCurrentPrimary(state.config)
     if (primary) applyDefaultModel(state)
+    normalizeProviderUrls(state.config)
     await api.writeOpenclawConfig(state.config)
   } catch (e) {
     toast('保存失败: ' + e, 'error')
@@ -423,6 +459,7 @@ async function doAutoSave(state) {
   try {
     const primary = getCurrentPrimary(state.config)
     if (primary) applyDefaultModel(state)
+    normalizeProviderUrls(state.config)
     await api.writeOpenclawConfig(state.config)
 
     // 重启 Gateway 使配置生效（Gateway 不支持 SIGHUP 热重载）
@@ -770,6 +807,11 @@ function bindTopActions(page, state) {
     btn.innerHTML = `${icon('zap', 14)} 一键添加全部模型`
     btn.disabled = false
 
+    if (!models.length) {
+      toast('无法获取模型列表，请检查网络或稍后重试', 'error')
+      return
+    }
+
     pushUndo(state)
     if (!state.config.models) state.config.models = {}
     if (!state.config.models.providers) state.config.models.providers = {}
@@ -832,7 +874,7 @@ function addProvider(page, state) {
       <div class="form-group">
         <label class="form-label">接口地址</label>
         <input class="form-input" data-name="baseUrl" placeholder="https://api.openai.com/v1">
-        <div class="form-hint">模型服务的 API 地址，通常以 /v1 结尾</div>
+        <div class="form-hint">模型服务的 API 地址，通常以 /v1 结尾；Ollama 可直接填 http://127.0.0.1:11434</div>
       </div>
       <div class="form-group">
         <label class="form-label">密钥 (API Key)</label>
@@ -844,7 +886,7 @@ function addProvider(page, state) {
         <select class="form-input" data-name="api">
           ${API_TYPES.map(t => `<option value="${t.value}">${t.label}</option>`).join('')}
         </select>
-        <div class="form-hint">大多数中转站选「OpenAI 兼容」即可</div>
+        <div class="form-hint">大多数中转站和 Ollama 选「OpenAI 兼容」即可</div>
       </div>
       <div class="modal-actions">
         <button class="btn btn-secondary btn-sm" data-action="cancel">取消</button>
@@ -903,12 +945,12 @@ function editProvider(page, state, providerKey) {
   showModal({
     title: `编辑服务商: ${providerKey}`,
     fields: [
-      { name: 'baseUrl', label: '接口地址', value: p.baseUrl || '', hint: '模型服务的 API 地址，通常以 /v1 结尾' },
+      { name: 'baseUrl', label: '接口地址', value: p.baseUrl || '', hint: '模型服务的 API 地址，通常以 /v1 结尾；Ollama 可直接填 http://127.0.0.1:11434' },
       { name: 'apiKey', label: '密钥 (API Key)', value: p.apiKey || '', hint: '修改后自动保存生效' },
       {
         name: 'api', label: '接口类型', type: 'select', value: p.api || 'openai-completions',
         options: API_TYPES,
-        hint: '大多数中转站选「OpenAI 兼容」即可',
+        hint: '大多数中转站和 Ollama 选「OpenAI 兼容」即可',
       },
     ],
     onConfirm: ({ baseUrl, apiKey, api: apiType }) => {
@@ -1157,7 +1199,7 @@ async function handleBatchTest(section, state, providerKey) {
 
     const start = Date.now()
     try {
-      await api.testModel(provider.baseUrl, provider.apiKey || '', modelId)
+      await api.testModel(provider.baseUrl, provider.apiKey || '', modelId, provider.api || 'openai-completions')
       const elapsed = Date.now() - start
       if (model && typeof model === 'object') {
         model.latency = elapsed
@@ -1215,7 +1257,7 @@ async function fetchRemoteModels(btn, page, state, providerKey) {
   btn.textContent = '获取中...'
 
   try {
-    const remoteIds = await api.listRemoteModels(provider.baseUrl, provider.apiKey || '')
+    const remoteIds = await api.listRemoteModels(provider.baseUrl, provider.apiKey || '', provider.api || 'openai-completions')
     btn.disabled = false
     btn.textContent = '获取列表'
 
@@ -1315,7 +1357,7 @@ async function testModel(btn, state, providerKey, idx) {
 
   const start = Date.now()
   try {
-    const reply = await api.testModel(provider.baseUrl, provider.apiKey || '', modelId)
+    const reply = await api.testModel(provider.baseUrl, provider.apiKey || '', modelId, provider.api || 'openai-completions')
     const elapsed = Date.now() - start
     // 记录到模型对象
     if (typeof model === 'object') {

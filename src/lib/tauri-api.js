@@ -170,8 +170,8 @@ export const api = {
   uninstallGateway: () => invoke('uninstall_gateway'),
   getNpmRegistry: () => cachedInvoke('get_npm_registry', {}, 30000),
   setNpmRegistry: (registry) => { invalidate('get_npm_registry'); return invoke('set_npm_registry', { registry }) },
-  testModel: (baseUrl, apiKey, modelId) => invoke('test_model', { baseUrl, apiKey, modelId }),
-  listRemoteModels: (baseUrl, apiKey) => invoke('list_remote_models', { baseUrl, apiKey }),
+  testModel: (baseUrl, apiKey, modelId, apiType = null) => invoke('test_model', { baseUrl, apiKey, modelId, apiType }),
+  listRemoteModels: (baseUrl, apiKey, apiType = null) => invoke('list_remote_models', { baseUrl, apiKey, apiType }),
 
   // Agent 管理
   listAgents: () => cachedInvoke('list_agents'),
@@ -199,7 +199,9 @@ export const api = {
   toggleMessagingPlatform: (platform, enabled) => { invalidate('list_configured_platforms'); return invoke('toggle_messaging_platform', { platform, enabled }) },
   verifyBotToken: (platform, form) => invoke('verify_bot_token', { platform, form }),
   listConfiguredPlatforms: () => cachedInvoke('list_configured_platforms', {}, 5000),
+  getChannelPluginStatus: (pluginId) => invoke('get_channel_plugin_status', { pluginId }),
   installQqbotPlugin: () => invoke('install_qqbot_plugin'),
+  installChannelPlugin: (packageName, pluginId) => invoke('install_channel_plugin', { packageName, pluginId }),
 
   // 面板配置 (clawpanel.json)
   readPanelConfig: () => invoke('read_panel_config'),
@@ -211,7 +213,11 @@ export const api = {
   checkNode: () => cachedInvoke('check_node', {}, 60000),
   checkNodeAtPath: (nodeDir) => invoke('check_node_at_path', { nodeDir }),
   scanNodePaths: () => invoke('scan_node_paths'),
-  saveCustomNodePath: (nodeDir) => invoke('save_custom_node_path', { nodeDir }),
+  saveCustomNodePath: (nodeDir) => invoke('save_custom_node_path', { nodeDir }).then(r => { invalidate('check_node'); invoke('invalidate_path_cache').catch(() => {}); return r }),
+  invalidatePathCache: () => invoke('invalidate_path_cache'),
+  checkGit: () => cachedInvoke('check_git', {}, 60000),
+  autoInstallGit: () => invoke('auto_install_git'),
+  configureGitHttps: () => invoke('configure_git_https'),
   getDeployConfig: () => cachedInvoke('get_deploy_config'),
   patchModelVision: () => invoke('patch_model_vision'),
   checkPanelUpdate: () => invoke('check_panel_update'),
@@ -229,6 +235,8 @@ export const api = {
   // 设备配对
   autoPairDevice: () => invoke('auto_pair_device'),
   checkPairingStatus: () => invoke('check_pairing_status'),
+  pairingListChannel: (channel) => invoke('pairing_list_channel', { channel }),
+  pairingApproveChannel: (channel, code, notify = false) => invoke('pairing_approve_channel', { channel, code, notify }),
 
   // AI 助手工具
   assistantExec: (command, cwd) => invoke('assistant_exec', { command, cwd: cwd || null }),

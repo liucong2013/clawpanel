@@ -2,7 +2,7 @@
  * 聊天页面 - 完整版，对接 OpenClaw Gateway
  * 支持：流式响应、Markdown 渲染、会话管理、Agent 选择、快捷指令
  */
-import { api } from '../lib/tauri-api.js'
+import { api, invalidate } from '../lib/tauri-api.js'
 import { navigate } from '../router.js'
 import { wsClient, uuid } from '../lib/ws-client.js'
 import { renderMarkdown } from '../lib/markdown.js'
@@ -13,6 +13,9 @@ import { icon as svgIcon } from '../lib/icons.js'
 
 const RENDER_THROTTLE = 30
 const STORAGE_SESSION_KEY = 'clawpanel-last-session'
+const STORAGE_MODEL_KEY = 'clawpanel-chat-selected-model'
+const STORAGE_SIDEBAR_KEY = 'clawpanel-chat-sidebar-open'
+const STORAGE_SESSION_NAMES_KEY = 'clawpanel-chat-session-names'
 
 const COMMANDS = [
   { title: '会话', commands: [
@@ -41,6 +44,7 @@ const COMMANDS = [
 let _sessionKey = null, _page = null, _messagesEl = null, _textarea = null
 let _sendBtn = null, _statusDot = null, _typingEl = null, _scrollBtn = null
 let _sessionListEl = null, _cmdPanelEl = null, _attachPreviewEl = null, _fileInputEl = null
+let _modelSelectEl = null
 let _currentAiBubble = null, _currentAiText = '', _currentAiImages = [], _currentAiVideos = [], _currentAiAudios = [], _currentAiFiles = [], _currentRunId = null
 let _isStreaming = false, _isSending = false, _messageQueue = [], _streamStartTime = 0
 let _lastRenderTime = 0, _renderPending = false, _lastHistoryHash = ''
@@ -49,6 +53,10 @@ let _pageActive = false
 let _errorTimer = null, _lastErrorMsg = null
 let _attachments = []
 let _hasEverConnected = false
+let _availableModels = []
+let _primaryModel = ''
+let _selectedModel = ''
+let _isApplyingModel = false
 
 export async function render() {
   const page = document.createElement('div')
@@ -76,6 +84,14 @@ export async function render() {
           <span class="chat-title" id="chat-title">聊天</span>
         </div>
         <div class="chat-header-actions">
+          <div class="chat-model-group">
+            <select class="form-input" id="chat-model-select" title="切换当前会话模型" style="width:200px;max-width:28vw;padding:6px 10px;font-size:var(--font-size-xs)">
+              <option value="">加载模型中...</option>
+            </select>
+            <button class="btn btn-sm btn-ghost" id="btn-refresh-models" title="刷新模型列表">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            </button>
+          </div>
           <button class="btn btn-sm btn-ghost" id="btn-cmd" title="快捷指令">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M18 3a3 3 0 00-3 3v12a3 3 0 003 3 3 3 0 003-3 3 3 0 00-3-3H6a3 3 0 00-3 3 3 3 0 003 3 3 3 0 003-3V6a3 3 0 00-3-3 3 3 0 00-3 3 3 3 0 003 3h12a3 3 0 003-3 3 3 0 00-3-3z"/></svg>
           </button>
@@ -132,6 +148,8 @@ export async function render() {
   _cmdPanelEl = page.querySelector('#chat-cmd-panel')
   _attachPreviewEl = page.querySelector('#chat-attachments-preview')
   _fileInputEl = page.querySelector('#chat-file-input')
+  _modelSelectEl = page.querySelector('#chat-model-select')
+  page.querySelector('#chat-sidebar')?.classList.toggle('open', getSidebarOpen())
 
   bindEvents(page)
   bindConnectOverlay(page)
@@ -139,6 +157,7 @@ export async function render() {
   // 首次使用引导提示
   showPageGuide(_messagesEl)
 
+  loadModelOptions()
   // 非阻塞：先返回 DOM，后台连接 Gateway
   connectGateway()
   return page
@@ -173,6 +192,15 @@ function showPageGuide(container) {
 // ── 事件绑定 ──
 
 function bindEvents(page) {
+  if (_modelSelectEl) {
+    _modelSelectEl.addEventListener('change', () => {
+      _selectedModel = _modelSelectEl.value
+      if (_selectedModel) localStorage.setItem(STORAGE_MODEL_KEY, _selectedModel)
+      else localStorage.removeItem(STORAGE_MODEL_KEY)
+      applySelectedModel()
+    })
+  }
+
   _textarea.addEventListener('input', () => {
     _textarea.style.height = 'auto'
     _textarea.style.height = Math.min(_textarea.scrollHeight, 150) + 'px'
@@ -193,11 +221,16 @@ function bindEvents(page) {
   })
 
   page.querySelector('#btn-toggle-sidebar').addEventListener('click', () => {
-    page.querySelector('#chat-sidebar').classList.toggle('open')
+    const sidebar = page.querySelector('#chat-sidebar')
+    if (!sidebar) return
+    const nextOpen = !sidebar.classList.contains('open')
+    sidebar.classList.toggle('open', nextOpen)
+    setSidebarOpen(nextOpen)
   })
   page.querySelector('#btn-new-session').addEventListener('click', () => showNewSessionDialog())
   page.querySelector('#btn-cmd').addEventListener('click', () => toggleCmdPanel())
   page.querySelector('#btn-reset-session').addEventListener('click', () => resetCurrentSession())
+  page.querySelector('#btn-refresh-models')?.addEventListener('click', () => loadModelOptions(true))
 
   // 文件上传
   page.querySelector('#chat-attach-btn').addEventListener('click', () => _fileInputEl.click())
@@ -211,6 +244,113 @@ function bindEvents(page) {
   })
   _scrollBtn.addEventListener('click', () => scrollToBottom())
   _messagesEl.addEventListener('click', () => hideCmdPanel())
+}
+
+async function loadModelOptions(showToast = false) {
+  if (!_modelSelectEl) return
+  // 显示加载状态
+  _modelSelectEl.innerHTML = '<option value="">加载模型中...</option>'
+  _modelSelectEl.disabled = true
+  try {
+    invalidate('read_openclaw_config')
+    const configPromise = api.readOpenclawConfig()
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('读取超时(8s)，请检查配置文件')), 8000))
+    const config = await Promise.race([configPromise, timeoutPromise])
+    const providers = config?.models?.providers || {}
+    _primaryModel = config?.agents?.defaults?.model?.primary || ''
+    const models = []
+    const seen = new Set()
+    if (_primaryModel) {
+      seen.add(_primaryModel)
+      models.push(_primaryModel)
+    }
+    for (const [providerKey, provider] of Object.entries(providers)) {
+      for (const item of (provider?.models || [])) {
+        const modelId = typeof item === 'string' ? item : item?.id
+        if (!modelId) continue
+        const full = `${providerKey}/${modelId}`
+        if (seen.has(full)) continue
+        seen.add(full)
+        models.push(full)
+      }
+    }
+    _availableModels = models
+    const saved = localStorage.getItem(STORAGE_MODEL_KEY) || ''
+    _selectedModel = models.includes(saved) ? saved : (_primaryModel || models[0] || '')
+    renderModelSelect()
+    if (showToast) toast(`已刷新，共 ${models.length} 个模型`, 'success')
+  } catch (e) {
+    _availableModels = []
+    _primaryModel = ''
+    _selectedModel = ''
+    renderModelSelect(`加载失败: ${e.message || e}`)
+    if (showToast) toast('加载模型失败: ' + (e.message || e), 'error')
+  }
+}
+
+function renderModelSelect(errorText = '') {
+  if (!_modelSelectEl) return
+  if (!_availableModels.length) {
+    _modelSelectEl.innerHTML = `<option value="">${escapeAttr(errorText || '未配置模型')}</option>`
+    _modelSelectEl.disabled = true
+    _modelSelectEl.title = errorText || '请先到模型配置页面添加模型'
+    return
+  }
+  _modelSelectEl.disabled = _isApplyingModel
+  _modelSelectEl.innerHTML = _availableModels.map(full => {
+    const suffix = full === _primaryModel ? '（主模型）' : ''
+    return `<option value="${escapeAttr(full)}" ${full === _selectedModel ? 'selected' : ''}>${full}${suffix}</option>`
+  }).join('')
+  _modelSelectEl.title = _selectedModel ? `切换当前会话模型：${_selectedModel}` : '切换当前会话模型'
+}
+
+function escapeAttr(str) {
+  return (str || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/** 本地会话别名缓存 */
+function getSessionNames() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_SESSION_NAMES_KEY) || '{}') } catch { return {} }
+}
+function setSessionName(key, name) {
+  const names = getSessionNames()
+  if (name) names[key] = name
+  else delete names[key]
+  localStorage.setItem(STORAGE_SESSION_NAMES_KEY, JSON.stringify(names))
+}
+function getDisplayLabel(key) {
+  const custom = getSessionNames()[key]
+  return custom || parseSessionLabel(key)
+}
+
+function getSidebarOpen() {
+  return localStorage.getItem(STORAGE_SIDEBAR_KEY) === '1'
+}
+
+function setSidebarOpen(open) {
+  localStorage.setItem(STORAGE_SIDEBAR_KEY, open ? '1' : '0')
+}
+
+async function applySelectedModel() {
+  if (!_selectedModel) {
+    toast('请先选择模型', 'warning')
+    return
+  }
+  if (!wsClient.gatewayReady || !_sessionKey) {
+    toast('Gateway 未就绪，连接成功后再切换模型', 'warning')
+    return
+  }
+  _isApplyingModel = true
+  renderModelSelect()
+  try {
+    await wsClient.chatSend(_sessionKey, `/model ${_selectedModel}`)
+    toast(`已切换当前会话模型为 ${_selectedModel}`, 'success')
+  } catch (e) {
+    toast('切换模型失败: ' + (e.message || e), 'error')
+  } finally {
+    _isApplyingModel = false
+    renderModelSelect()
+  }
 }
 
 // ── 连接引导遮罩 ──
@@ -450,9 +590,21 @@ function renderSessionList(sessions) {
     const key = s.sessionKey || s.key || ''
     const active = key === _sessionKey ? ' active' : ''
     const label = parseSessionLabel(key)
-    return `<div class="chat-session-item${active}" data-key="${key}">
-      <span class="chat-session-label">${label}</span>
-      <button class="chat-session-del" data-del="${key}" title="删除">×</button>
+    const ts = s.updatedAt || s.lastActivity || s.createdAt || 0
+    const timeStr = ts ? formatSessionTime(ts) : ''
+    const msgCount = s.messageCount || s.messages || 0
+    const agentId = parseSessionAgent(key)
+    const displayLabel = getDisplayLabel(key) || label
+    return `<div class="chat-session-card${active}" data-key="${escapeAttr(key)}">
+      <div class="chat-session-card-header">
+        <span class="chat-session-label" title="双击重命名">${escapeAttr(displayLabel)}</span>
+        <button class="chat-session-del" data-del="${escapeAttr(key)}" title="删除">×</button>
+      </div>
+      <div class="chat-session-card-meta">
+        ${agentId && agentId !== 'main' ? `<span class="chat-session-agent">${escapeAttr(agentId)}</span>` : ''}
+        ${msgCount > 0 ? `<span>${msgCount} 条消息</span>` : ''}
+        ${timeStr ? `<span>${timeStr}</span>` : ''}
+      </div>
     </div>`
   }).join('')
 
@@ -462,6 +614,31 @@ function renderSessionList(sessions) {
     const item = e.target.closest('[data-key]')
     if (item) switchSession(item.dataset.key)
   }
+  _sessionListEl.ondblclick = (e) => {
+    const labelEl = e.target.closest('.chat-session-label')
+    if (!labelEl) return
+    const card = labelEl.closest('[data-key]')
+    if (!card) return
+    e.stopPropagation()
+    renameSession(card.dataset.key, labelEl)
+  }
+}
+
+function formatSessionTime(ts) {
+  const d = new Date(typeof ts === 'number' && ts < 1e12 ? ts * 1000 : ts)
+  if (isNaN(d.getTime())) return ''
+  const now = new Date()
+  const diffMs = now - d
+  if (diffMs < 60000) return '刚刚'
+  if (diffMs < 3600000) return Math.floor(diffMs / 60000) + ' 分钟前'
+  if (diffMs < 86400000) return Math.floor(diffMs / 3600000) + ' 小时前'
+  if (diffMs < 604800000) return Math.floor(diffMs / 86400000) + ' 天前'
+  return `${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`
+}
+
+function parseSessionAgent(key) {
+  const parts = (key || '').split(':')
+  return parts.length >= 2 ? parts[1] : ''
 }
 
 function parseSessionLabel(key) {
@@ -499,7 +676,7 @@ async function showNewSessionDialog() {
     title: '新建会话',
     fields: [
       { name: 'name', label: '会话名称', value: '', placeholder: '例如：翻译助手' },
-      { name: 'agent', label: '智能体', type: 'select', value: defaultAgent, options: initialOptions },
+      { name: 'agent', label: 'Agent', type: 'select', value: defaultAgent, options: initialOptions },
     ],
     onConfirm: (result) => {
       const name = (result.name || '').trim()
@@ -555,6 +732,9 @@ async function deleteSession(key) {
 
 async function resetCurrentSession() {
   if (!_sessionKey) return
+  const label = getDisplayLabel(_sessionKey)
+  const yes = await showConfirm(`确定要重置会话「${label}」吗？\n\n重置后将清空该会话的所有聊天记录，此操作不可撤销。`)
+  if (!yes) return
   try {
     await wsClient.sessionsReset(_sessionKey)
     clearMessages()
@@ -568,7 +748,42 @@ async function resetCurrentSession() {
 
 function updateSessionTitle() {
   const el = _page?.querySelector('#chat-title')
-  if (el) el.textContent = parseSessionLabel(_sessionKey)
+  if (el) el.textContent = getDisplayLabel(_sessionKey)
+}
+
+function renameSession(key, labelEl) {
+  const current = getDisplayLabel(key)
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.value = current
+  input.className = 'chat-session-rename-input'
+  input.style.cssText = 'width:100%;padding:2px 6px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-secondary);color:var(--text-primary);font-size:12px;outline:none'
+  const originalText = labelEl.textContent
+  labelEl.textContent = ''
+  labelEl.appendChild(input)
+  input.focus()
+  input.select()
+
+  let done = false
+  const finish = () => {
+    if (done) return
+    done = true
+    const newName = input.value.trim()
+    if (newName && newName !== parseSessionLabel(key)) {
+      setSessionName(key, newName)
+      toast('会话已重命名', 'success')
+    } else if (!newName || newName === parseSessionLabel(key)) {
+      setSessionName(key, '') // clear custom name
+    }
+    labelEl.textContent = getDisplayLabel(key)
+    // 如果是当前会话，同步更新顶部标题
+    if (key === _sessionKey) updateSessionTitle()
+  }
+  input.addEventListener('blur', finish)
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur() }
+    if (e.key === 'Escape') { input.value = originalText; input.blur() }
+  })
 }
 
 // ── 快捷指令面板 ──

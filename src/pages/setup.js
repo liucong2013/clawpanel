@@ -2,7 +2,7 @@
  * 初始设置页面 — openclaw 未安装时的引导
  * 自动检测环境 → 版本选择 → 一键安装 → 自动跳转
  */
-import { api } from '../lib/tauri-api.js'
+import { api, invalidate } from '../lib/tauri-api.js'
 import { showUpgradeModal } from '../components/modal.js'
 import { toast } from '../components/toast.js'
 import { setUpgrading, isMacPlatform } from '../lib/app-state.js'
@@ -45,15 +45,20 @@ async function runDetect(page) {
     <div class="stat-card loading-placeholder" style="height:48px"></div>
     <div class="stat-card loading-placeholder" style="height:48px;margin-top:8px"></div>
     <div class="stat-card loading-placeholder" style="height:48px;margin-top:8px"></div>
+    <div class="stat-card loading-placeholder" style="height:48px;margin-top:8px"></div>
   `
-  // 并行检测 Node.js、OpenClaw CLI、配置文件
-  const [nodeRes, clawRes, configRes] = await Promise.allSettled([
+  // 清除缓存，确保拿到最新检测结果
+  invalidate('check_node', 'check_git', 'get_services_status', 'check_installation')
+  // 并行检测 Node.js、Git、OpenClaw CLI、配置文件
+  const [nodeRes, gitRes, clawRes, configRes] = await Promise.allSettled([
     api.checkNode(),
+    api.checkGit(),
     api.getServicesStatus(),
     api.checkInstallation(),
   ])
 
   const node = nodeRes.status === 'fulfilled' ? nodeRes.value : { installed: false }
+  const git = gitRes.status === 'fulfilled' ? gitRes.value : { installed: false }
   const cliOk = clawRes.status === 'fulfilled'
     && clawRes.value?.length > 0
     && clawRes.value[0]?.cli_installed !== false
@@ -64,7 +69,6 @@ async function runDetect(page) {
     try {
       const initResult = await api.initOpenclawConfig()
       if (initResult?.created) {
-        // 重新检测配置
         config = await api.checkInstallation()
       }
     } catch (e) {
@@ -72,7 +76,12 @@ async function runDetect(page) {
     }
   }
 
-  renderSteps(page, { node, cliOk, config })
+  // Git 已安装时，自动配置 HTTPS 替代 SSH（静默执行）
+  if (git.installed) {
+    api.configureGitHttps().catch(() => {})
+  }
+
+  renderSteps(page, { node, git, cliOk, config })
 }
 
 function stepIcon(ok) {
@@ -80,9 +89,10 @@ function stepIcon(ok) {
   return `<span style="color:${color};font-weight:700;width:18px;display:inline-block">${ok ? '✓' : '✗'}</span>`
 }
 
-function renderSteps(page, { node, cliOk, config }) {
+function renderSteps(page, { node, git, cliOk, config }) {
   const stepsEl = page.querySelector('#setup-steps')
   const nodeOk = node.installed
+  const gitOk = git?.installed || false
   const allOk = nodeOk && cliOk && config.installed
 
   let html = ''
@@ -105,7 +115,7 @@ function renderSteps(page, { node, cliOk, config }) {
             ${isMacPlatform()
               ? `macOS 上从 Finder 启动可能找不到 Node.js。试试关掉 ClawPanel 后从终端启动：<br>
                  <code style="background:var(--bg-secondary);padding:2px 6px;border-radius:3px;user-select:all">open /Applications/ClawPanel.app</code>`
-              : `安装 Node.js 后需要<strong>重启 ClawPanel</strong>，新的环境变量才能生效。`
+              : `安装 Node.js 后点击「重新检测」或使用下方「自动扫描」，无需重启。`
             }
             <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
               <button class="btn btn-secondary btn-sm" id="btn-scan-node" style="font-size:11px;padding:3px 10px">${icon('search', 12)} 自动扫描</button>
@@ -122,7 +132,31 @@ function renderSteps(page, { node, cliOk, config }) {
     </div>
   `
 
-  // 第二步：OpenClaw CLI
+  // 第二步：Git
+  html += `
+    <div class="config-section" style="text-align:left;${nodeOk ? '' : 'opacity:0.4;pointer-events:none'}">
+      <div class="config-section-title" style="display:flex;align-items:center;gap:4px">
+        ${stepIcon(gitOk)} Git 版本管理
+      </div>
+      ${gitOk
+        ? `<p style="color:var(--success);font-size:var(--font-size-sm)">已安装 ${git.version || ''}</p>
+           <p style="font-size:var(--font-size-xs);color:var(--text-tertiary);margin-top:4px">✅ 已自动配置 Git 使用 HTTPS（避免 SSH 连接问题）</p>`
+        : `<p style="color:var(--text-secondary);font-size:var(--font-size-sm);margin-bottom:var(--space-sm);line-height:1.5">
+            部分依赖需要 Git 下载源码。点击下方按钮自动安装，如果失败请手动安装。
+          </p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" id="btn-auto-install-git">一键安装 Git</button>
+            <a class="btn btn-secondary btn-sm" href="https://git-scm.com/downloads" target="_blank" rel="noopener">手动下载</a>
+          </div>
+          <div id="git-install-result" style="margin-top:var(--space-sm);display:none"></div>
+          <div style="margin-top:8px;font-size:var(--font-size-xs);color:var(--text-tertiary);line-height:1.5">
+            <strong>没有 Git 也能安装？</strong> 大部分情况下可以，但个别依赖可能需要 Git。建议安装以避免问题。
+          </div>`
+      }
+    </div>
+  `
+
+  // 第三步：OpenClaw CLI
   html += `
     <div class="config-section" style="text-align:left;${nodeOk ? '' : 'opacity:0.4;pointer-events:none'}">
       <div class="config-section-title" style="display:flex;align-items:center;gap:4px">
@@ -134,7 +168,7 @@ function renderSteps(page, { node, cliOk, config }) {
       }
     </div>
   `
-  // 第三步：配置文件
+  // 第四步：配置文件
   html += `
     <div class="config-section" style="text-align:left;${cliOk ? '' : 'opacity:0.4;pointer-events:none'}">
       <div class="config-section-title" style="display:flex;align-items:center;gap:4px">
@@ -176,6 +210,22 @@ function renderSteps(page, { node, cliOk, config }) {
   // 全部就绪 → 进入面板
   if (allOk) {
     html += `
+      <div class="config-section" style="text-align:left;margin-top:var(--space-md)">
+        <div class="config-section-title">下一步建议</div>
+        <div style="color:var(--text-secondary);font-size:var(--font-size-sm);line-height:1.7">
+          当前仅表示运行环境已经就绪，并不代表已经可以直接聊天。通常还需要继续完成以下步骤：
+          <ol style="margin:8px 0 0 18px;padding:0">
+            <li>前往「模型配置」添加至少一个可用模型，并确认主模型已设置</li>
+            <li>前往「Gateway」确认服务已启动</li>
+            <li>如需飞书、钉钉、QQ 等消息渠道，请到「消息渠道」完成接入与配对</li>
+          </ol>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          <button class="btn btn-secondary btn-sm" id="btn-goto-models">配置模型</button>
+          <button class="btn btn-secondary btn-sm" id="btn-goto-gateway">Gateway 设置</button>
+          <button class="btn btn-secondary btn-sm" id="btn-goto-channels">消息渠道</button>
+        </div>
+      </div>
       <div style="margin-top:var(--space-lg)">
         <button class="btn btn-primary" id="btn-enter" style="min-width:200px">进入面板</button>
       </div>
@@ -183,7 +233,7 @@ function renderSteps(page, { node, cliOk, config }) {
   }
 
   stepsEl.innerHTML = html
-  bindEvents(page, nodeOk, { node, cliOk, config })
+  bindEvents(page, nodeOk, { node, git, cliOk, config })
 }
 
 function renderInstallSection() {
@@ -220,6 +270,7 @@ function renderInstallSection() {
                 <div style="font-weight:600;margin-bottom:4px">WSL 中使用 Web 版：</div>
                 <div style="margin-bottom:2px;opacity:0.8">打开 WSL 终端，一键部署 ClawPanel Web 版：</div>
                 <code style="display:block;background:var(--bg-secondary);padding:6px 10px;border-radius:4px;user-select:all;word-break:break-all">curl -fsSL https://raw.githubusercontent.com/qingchencloud/clawpanel/main/deploy.sh | bash</code>
+                <div style="margin-top:4px;opacity:0.7">国内用户如无法访问 GitHub：<code style="background:var(--bg-secondary);padding:2px 4px;border-radius:3px;user-select:all">curl -fsSL https://gitee.com/QtCodeCreators/clawpanel/raw/main/deploy.sh | bash</code></div>
                 <div style="margin-top:4px;opacity:0.7">部署后在浏览器访问 WSL 的 IP 即可管理。</div>
               </div>
             ` : ''}
@@ -228,11 +279,13 @@ function renderInstallSection() {
               <div style="margin-bottom:2px;opacity:0.8">在容器内安装 OpenClaw + ClawPanel Web 版：</div>
               <code style="display:block;background:var(--bg-secondary);padding:6px 10px;border-radius:4px;user-select:all;word-break:break-all;margin-bottom:4px">npm i -g @qingchencloud/openclaw-zh</code>
               <code style="display:block;background:var(--bg-secondary);padding:6px 10px;border-radius:4px;user-select:all;word-break:break-all">curl -fsSL https://raw.githubusercontent.com/qingchencloud/clawpanel/main/deploy.sh | bash</code>
+              <div style="margin-top:4px;opacity:0.7">国内镜像：<code style="background:var(--bg-secondary);padding:2px 4px;border-radius:3px;user-select:all">curl -fsSL https://gitee.com/QtCodeCreators/clawpanel/raw/main/deploy.sh | bash</code></div>
             </div>
             <div>
               <div style="font-weight:600;margin-bottom:4px">远程服务器：</div>
               <div style="margin-bottom:2px;opacity:0.8">SSH 登录服务器后执行：</div>
               <code style="display:block;background:var(--bg-secondary);padding:6px 10px;border-radius:4px;user-select:all;word-break:break-all">curl -fsSL https://raw.githubusercontent.com/qingchencloud/clawpanel/main/deploy.sh | bash</code>
+              <div style="margin-top:4px;opacity:0.7">国内镜像：<code style="background:var(--bg-secondary);padding:2px 4px;border-radius:3px;user-select:all">curl -fsSL https://gitee.com/QtCodeCreators/clawpanel/raw/main/deploy.sh | bash</code></div>
             </div>
           </div>
         </details>
@@ -275,10 +328,12 @@ function renderInstallSection() {
   `
 }
 
-function buildSetupProblemPrompt({ node, cliOk, config }) {
+function buildSetupProblemPrompt({ node, git, cliOk, config }) {
   const problems = []
   if (!node.installed) problems.push('- Node.js 未安装或未检测到')
   else problems.push(`- Node.js 已安装: ${node.version || '版本未知'}`)
+  if (!git?.installed) problems.push('- Git 未安装')
+  else problems.push(`- Git 已安装: ${git.version || '版本未知'}`)
   if (!cliOk) problems.push('- OpenClaw CLI 未安装')
   else problems.push('- OpenClaw CLI 已安装')
   if (!config.installed) problems.push('- 配置文件不存在')
@@ -309,6 +364,52 @@ function bindEvents(page, nodeOk, detectState) {
   // 进入面板
   page.querySelector('#btn-enter')?.addEventListener('click', () => {
     window.location.hash = '/dashboard'
+  })
+  page.querySelector('#btn-goto-models')?.addEventListener('click', () => {
+    window.location.hash = '/models'
+  })
+  page.querySelector('#btn-goto-gateway')?.addEventListener('click', () => {
+    window.location.hash = '/gateway'
+  })
+  page.querySelector('#btn-goto-channels')?.addEventListener('click', () => {
+    window.location.hash = '/channels'
+  })
+
+  // 一键安装 Git
+  page.querySelector('#btn-auto-install-git')?.addEventListener('click', async () => {
+    const btn = page.querySelector('#btn-auto-install-git')
+    const resultEl = page.querySelector('#git-install-result')
+    btn.disabled = true
+    btn.textContent = '安装中...'
+    if (resultEl) {
+      resultEl.style.display = 'block'
+      resultEl.innerHTML = '<span style="color:var(--text-tertiary)">正在安装 Git，请稍候...</span>'
+    }
+    try {
+      const msg = await api.autoInstallGit()
+      if (resultEl) resultEl.innerHTML = `<span style="color:var(--success)">✓ ${msg}</span>`
+      toast('Git 安装成功', 'success')
+      // 安装成功后自动配置 HTTPS
+      api.configureGitHttps().catch(() => {})
+      setTimeout(() => runDetect(page), 1000)
+    } catch (e) {
+      const errMsg = String(e.message || e)
+      if (resultEl) {
+        resultEl.innerHTML = `<div>
+          <span style="color:var(--danger)">自动安装失败: ${errMsg}</span>
+          <p style="margin-top:6px;font-size:var(--font-size-xs);color:var(--text-secondary);line-height:1.5">
+            请手动安装 Git：<br>
+            <strong>Windows:</strong> 下载 <a href="https://git-scm.com/downloads" target="_blank" style="color:var(--accent)">git-scm.com</a> 安装包<br>
+            <strong>macOS:</strong> 在终端执行 <code style="background:var(--bg-secondary);padding:2px 4px;border-radius:3px">xcode-select --install</code> 或 <code style="background:var(--bg-secondary);padding:2px 4px;border-radius:3px">brew install git</code><br>
+            <strong>Linux:</strong> <code style="background:var(--bg-secondary);padding:2px 4px;border-radius:3px">sudo apt install git</code> 或 <code style="background:var(--bg-secondary);padding:2px 4px;border-radius:3px">sudo yum install git</code>
+          </p>
+        </div>`
+      }
+      toast('Git 自动安装失败，请手动安装', 'warning')
+    } finally {
+      btn.disabled = false
+      btn.textContent = '一键安装 Git'
+    }
   })
 
   // 一键初始化配置
@@ -356,7 +457,7 @@ function bindEvents(page, nodeOk, detectState) {
           b.addEventListener('click', async () => {
             await api.saveCustomNodePath(b.dataset.path)
             toast('Node.js 路径已保存，正在重新检测...', 'success')
-            setTimeout(() => window.location.reload(), 500)
+            setTimeout(() => runDetect(page), 300)
           })
         })
       }
@@ -382,7 +483,7 @@ function bindEvents(page, nodeOk, detectState) {
         await api.saveCustomNodePath(dir)
         resultEl.innerHTML = `<span style="color:var(--success)">✓ 找到 Node.js ${result.version}，路径已保存</span>`
         toast('Node.js 路径已保存，正在重新检测...', 'success')
-        setTimeout(() => window.location.reload(), 500)
+        setTimeout(() => runDetect(page), 300)
       } else {
         resultEl.innerHTML = `<span style="color:var(--warning)">该目录下未找到 node 可执行文件，请确认路径正确。</span>`
       }

@@ -157,6 +157,14 @@ function renderStatCards(page, services, version, agents, config) {
       <div class="stat-card-value">${runningCount}/${services.length}</div>
       <div class="stat-card-meta">存活率 ${services.length ? Math.round(runningCount / services.length * 100) : 0}%</div>
     </div>
+    <div class="stat-card stat-card-clickable" id="card-control-ui" title="打开 OpenClaw 原生控制面板">
+      <div class="stat-card-header">
+        <span class="stat-card-label">Control UI</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="opacity:0.5"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+      </div>
+      <div class="stat-card-value" style="font-size:var(--font-size-sm)">OpenClaw 原生面板</div>
+      <div class="stat-card-meta">${gw?.running ? '点击打开浏览器' : 'Gateway 未运行'}</div>
+    </div>
   `
 }
 
@@ -178,75 +186,95 @@ function renderOverview(page, services, mcpConfig, backups, config, agents) {
   const latestBackup = backups.length > 0 ? backups.sort((a,b) => b.created_at - a.created_at)[0] : null
   const lastUpdate = config?.meta?.lastTouchedVersion || '未知'
 
+  const gwPort = config?.gateway?.port || 18789
+  const primaryModel = config?.agents?.defaults?.model?.primary || '未设置'
+
   containerEl.innerHTML = `
     <div class="dashboard-overview">
-      <div class="overview-section">
-        <div class="overview-item">
-          <div class="overview-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
-            Gateway 核心网关
+      <div class="overview-grid">
+        <div class="overview-card" data-nav="/gateway">
+          <div class="overview-card-icon" style="color:${gw?.running ? 'var(--success)' : 'var(--error)'}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           </div>
-          <div class="overview-actions">
-            <span class="overview-status" style="color: ${gw?.running ? 'var(--success)' : 'var(--error)'}">
-              ${gw?.running ? '运行中' : '已停止'}
-            </span>
+          <div class="overview-card-body">
+            <div class="overview-card-title">Gateway</div>
+            <div class="overview-card-value" style="color:${gw?.running ? 'var(--success)' : 'var(--error)'}">${gw?.running ? '运行中' : '已停止'}</div>
+            <div class="overview-card-meta">端口 ${gwPort} ${gw?.pid ? '· PID ' + gw.pid : ''}</div>
+          </div>
+          <div class="overview-card-actions">
             ${gw?.running
               ? '<button class="btn btn-danger btn-xs" data-action="stop-gw">停止</button><button class="btn btn-secondary btn-xs" data-action="restart-gw">重启</button>'
               : '<button class="btn btn-primary btn-xs" data-action="start-gw">启动</button>'
             }
           </div>
         </div>
-        <div class="overview-item">
-          <div class="overview-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
-            MCP 扩展工具
-          </div>
-          <div class="overview-value">
-            ${mcpCount} 个已挂载
-          </div>
-        </div>
-      </div>
 
-      <div class="overview-section">
-        <div class="overview-item">
-          <div class="overview-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-            最近备份
+        <div class="overview-card" data-nav="/models">
+          <div class="overview-card-icon" style="color:var(--accent)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
           </div>
-          <div class="overview-value">
-            ${latestBackup ? formatDate(latestBackup.created_at) : '从无备份'}
-          </div>
-        </div>
-        <div class="overview-item">
-          <div class="overview-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-            配置版本标识
-          </div>
-          <div class="overview-value">
-            ${lastUpdate}
+          <div class="overview-card-body">
+            <div class="overview-card-title">主模型</div>
+            <div class="overview-card-value" style="font-size:var(--font-size-sm)">${primaryModel}</div>
+            <div class="overview-card-meta">并发上限 ${config?.agents?.defaults?.maxConcurrent || 4}</div>
           </div>
         </div>
-        <div class="overview-item">
-          <div class="overview-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
-            并行推理队列最大值
+
+        <div class="overview-card" data-nav="/skills">
+          <div class="overview-card-icon" style="color:var(--warning)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
           </div>
-          <div class="overview-value">
-            ${config?.agents?.defaults?.maxConcurrent || 4}
+          <div class="overview-card-body">
+            <div class="overview-card-title">MCP 工具</div>
+            <div class="overview-card-value">${mcpCount} 个</div>
+            <div class="overview-card-meta">已挂载扩展</div>
           </div>
         </div>
-        <div class="overview-item">
-          <div class="overview-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
-            工作区文件隔离
+
+        <div class="overview-card" data-nav="/services">
+          <div class="overview-card-icon" style="color:var(--text-tertiary)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           </div>
-          <div class="overview-value" style="color: ${agents.some(a => a.workspace) ? 'var(--success)' : 'var(--text-tertiary)'}">
-            ${agents.filter(a => a.workspace).length} 个 Agent 启用
+          <div class="overview-card-body">
+            <div class="overview-card-title">最近备份</div>
+            <div class="overview-card-value" style="font-size:var(--font-size-sm)">${latestBackup ? formatDate(latestBackup.created_at) : '从无备份'}</div>
+            <div class="overview-card-meta">${backups.length} 个备份文件</div>
+          </div>
+        </div>
+
+        <div class="overview-card" data-nav="/agents">
+          <div class="overview-card-icon" style="color:var(--success)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+          </div>
+          <div class="overview-card-body">
+            <div class="overview-card-title">Agent 舰队</div>
+            <div class="overview-card-value">${agents.length} 个</div>
+            <div class="overview-card-meta">${agents.filter(a => a.workspace).length} 个独立工作区</div>
+          </div>
+        </div>
+
+        <div class="overview-card">
+          <div class="overview-card-icon" style="color:var(--text-tertiary)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </div>
+          <div class="overview-card-body">
+            <div class="overview-card-title">配置版本</div>
+            <div class="overview-card-value" style="font-size:var(--font-size-sm)">${lastUpdate}</div>
+            <div class="overview-card-meta">openclaw.json</div>
           </div>
         </div>
       </div>
     </div>
   `
+
+  // 概览卡片点击导航
+  containerEl.querySelectorAll('[data-nav]').forEach(card => {
+    card.style.cursor = 'pointer'
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return
+      navigate(card.dataset.nav)
+    })
+  })
 }
 
 function renderLogs(page, logs) {
@@ -264,6 +292,31 @@ function bindActions(page) {
   const btnRestart = page.querySelector('#btn-restart-gw')
   const btnUpdate = page.querySelector('#btn-check-update')
   const btnCreateBackup = page.querySelector('#btn-create-backup')
+
+  // Control UI 卡片点击 → 打开 OpenClaw 原生面板（用事件委托，因为卡片是动态渲染的）
+  page.addEventListener('click', async (e) => {
+    const card = e.target.closest('#card-control-ui')
+    if (!card) return
+    if (e.target.closest('button')) return
+    try {
+      const config = await api.readOpenclawConfig()
+      const port = config?.gateway?.port || 18789
+      const url = `http://127.0.0.1:${port}`
+      // 尝试多种方式打开浏览器
+      if (window.__TAURI_INTERNALS__) {
+        try {
+          const { open } = await import('@tauri-apps/plugin-shell')
+          await open(url)
+        } catch {
+          window.open(url, '_blank')
+        }
+      } else {
+        window.open(url, '_blank')
+      }
+    } catch (e2) {
+      toast('打开 Control UI 失败: ' + (e2.message || e2), 'error')
+    }
+  })
 
   // 概览区域的 Gateway 启动/停止/重启 + ClawApp 导航
   page.addEventListener('click', async (e) => {

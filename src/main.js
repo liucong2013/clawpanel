@@ -486,8 +486,9 @@ function setupGatewayBanner() {
       banner.innerHTML = `
         <div class="gw-banner-content">
           <span class="gw-banner-icon">${statusIcon('warn', 16)}</span>
-          <span>Gateway 未启动，部分功能不可用</span>
-          <button class="btn btn-sm btn-primary" id="btn-gw-start">启动 Gateway</button>
+          <span>Gateway 未运行</span>
+          <button class="btn btn-sm btn-primary" id="btn-gw-start" style="margin-left:auto">启动</button>
+          <a class="btn btn-sm btn-ghost" href="#/services" style="color:inherit;font-size:12px">服务管理</a>
           <button class="gw-banner-close" id="btn-gw-dismiss" title="关闭提示">&times;</button>
         </div>
       `
@@ -503,14 +504,16 @@ function setupGatewayBanner() {
         try {
           await api.startService('ai.openclaw.gateway')
         } catch (err) {
-          const errMsg = err.message || String(err)
+          const errMsg = (err.message || String(err)).slice(0, 120)
           banner.innerHTML = `
-            <div class="gw-banner-content">
+            <div class="gw-banner-content" style="flex-wrap:wrap">
               <span class="gw-banner-icon">${statusIcon('warn', 16)}</span>
-              <span>启动失败: ${errMsg}</span>
-              <button class="btn btn-sm btn-primary" id="btn-gw-start">重试</button>
-              <a class="btn btn-sm btn-ghost" href="#/logs" style="color:inherit;text-decoration:underline">查看日志</a>
+              <span>启动失败</span>
+              <button class="btn btn-sm btn-primary" id="btn-gw-start" style="margin-left:auto">重试</button>
+              <a class="btn btn-sm btn-ghost" href="#/services" style="color:inherit;font-size:12px">服务管理</a>
+              <a class="btn btn-sm btn-ghost" href="#/logs" style="color:inherit;font-size:12px">查看日志</a>
             </div>
+            <div style="font-size:11px;opacity:0.7;margin-top:4px;font-family:monospace;word-break:break-all">${errMsg}</div>
           `
           update(false)
           return
