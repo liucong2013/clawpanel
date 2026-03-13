@@ -1281,6 +1281,68 @@ const handlers = {
     }
   },
 
+  get_channel_plugin_status({ pluginId }) {
+    if (!pluginId || !pluginId.trim()) throw new Error('pluginId 不能为空')
+    const pid = pluginId.trim()
+    const pluginDir = path.join(OPENCLAW_DIR, 'plugins', 'node_modules', pid)
+    const installed = fs.existsSync(pluginDir) && fs.existsSync(path.join(pluginDir, 'package.json'))
+    // 检测是否为内置插件
+    const bin = findOpenclawBin() || 'openclaw'
+    let builtin = false
+    try {
+      const result = spawnSync(bin, ['plugins', 'list'], { timeout: 10000, encoding: 'utf8', cwd: homedir() })
+      const output = (result.stdout || '') + (result.stderr || '')
+      if (output.includes(pid) && output.includes('built-in')) builtin = true
+    } catch {}
+    const cfg = fs.existsSync(CONFIG_PATH) ? JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) : {}
+    const allowArr = cfg.plugins?.allow || []
+    const allowed = allowArr.includes(pid)
+    const enabled = !!cfg.plugins?.entries?.[pid]?.enabled
+    const backupDir = path.join(OPENCLAW_DIR, 'plugin-backups', pid)
+    const legacyBackup = path.join(OPENCLAW_DIR, 'plugins', 'node_modules', `${pid}.bak`)
+    return {
+      installed, builtin, path: pluginDir,
+      allowed, enabled,
+      legacyBackupDetected: fs.existsSync(backupDir) || fs.existsSync(legacyBackup),
+    }
+  },
+
+  install_channel_plugin({ packageName, pluginId }) {
+    if (!packageName || !pluginId) throw new Error('packageName 和 pluginId 不能为空')
+    const bin = findOpenclawBin() || 'openclaw'
+    try {
+      execSync(`${bin} plugins install ${packageName.trim()}`, { timeout: 120000, cwd: homedir() })
+      return '安装成功'
+    } catch (e) {
+      throw new Error(`插件 ${pluginId} 安装失败: ` + (e.message || e))
+    }
+  },
+
+  async pairing_list_channel({ channel }) {
+    if (!channel || !channel.trim()) throw new Error('channel 不能为空')
+    const bin = findOpenclawBin() || 'openclaw'
+    try {
+      const output = execSync(`${bin} pairing list ${channel.trim()}`, { timeout: 15000, encoding: 'utf8', cwd: homedir() })
+      return output.trim() || '暂无待审批请求'
+    } catch (e) {
+      throw new Error('执行 openclaw pairing list 失败: ' + (e.stderr || e.message || e))
+    }
+  },
+
+  async pairing_approve_channel({ channel, code, notify }) {
+    if (!channel || !channel.trim()) throw new Error('channel 不能为空')
+    if (!code || !code.trim()) throw new Error('配对码不能为空')
+    const bin = findOpenclawBin() || 'openclaw'
+    const args = ['pairing', 'approve', channel.trim(), code.trim().toUpperCase()]
+    if (notify) args.push('--notify')
+    try {
+      const output = execSync(`${bin} ${args.join(' ')}`, { timeout: 15000, encoding: 'utf8', cwd: homedir() })
+      return output.trim() || '操作完成'
+    } catch (e) {
+      throw new Error('执行 openclaw pairing approve 失败: ' + (e.stderr || e.message || e))
+    }
+  },
+
   // === 实例管理 ===
 
   instance_list() {
