@@ -97,6 +97,9 @@ export async function render() {
     <div class="chat-main">
       <div class="chat-header">
         <div class="chat-status">
+          <button class="chat-toggle-sidebar" id="btn-toggle-sidebar-header" title="会话列表">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
           <span class="status-dot" id="chat-status-dot"></span>
           <span class="chat-title" id="chat-title">聊天</span>
         </div>
@@ -237,8 +240,18 @@ function bindEvents(page) {
     else sendMessage()
   })
 
+  const sidebar = page.querySelector('#chat-sidebar')
+
+  // Toggle in sidebar header (next to "+")
   page.querySelector('#btn-toggle-sidebar').addEventListener('click', () => {
-    const sidebar = page.querySelector('#chat-sidebar')
+    if (!sidebar) return
+    const nextOpen = !sidebar.classList.contains('open')
+    sidebar.classList.toggle('open', nextOpen)
+    setSidebarOpen(nextOpen)
+  })
+
+  // Toggle in top header (for reopening when sidebar is hidden)
+  page.querySelector('#btn-toggle-sidebar-header').addEventListener('click', () => {
     if (!sidebar) return
     const nextOpen = !sidebar.classList.contains('open')
     sidebar.classList.toggle('open', nextOpen)
