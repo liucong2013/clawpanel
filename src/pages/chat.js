@@ -84,8 +84,10 @@ export async function render() {
       <div class="chat-sidebar-header">
         <span>会话列表</span>
         <div class="chat-sidebar-header-actions">
-          <button class="chat-sidebar-btn" id="btn-toggle-sidebar" title="会话列表">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          <button class="chat-sidebar-btn" id="btn-toggle-sidebar" title="折叠/展开会话列表">
+            <svg id="icon-sidebar-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6"></polyline>
+            </svg>
           </button>
           <button class="chat-sidebar-btn" id="btn-new-session" title="新建会话">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -359,6 +361,14 @@ function getSidebarOpen() {
 
 function setSidebarOpen(open) {
   localStorage.setItem(STORAGE_SIDEBAR_KEY, open ? '1' : '0')
+
+  // Update the sidebar header toggle icon to look like collapse/expand
+  const icon = document.querySelector('#icon-sidebar-toggle polyline')
+  if (icon) {
+    // open => show chevron-left (collapse)
+    // closed => show chevron-right (expand)
+    icon.setAttribute('points', open ? '15 18 9 12 15 6' : '9 18 15 12 9 6')
+  }
 }
 
 async function applySelectedModel() {
